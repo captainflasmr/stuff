@@ -1,0 +1,899 @@
+#+TITLE: Setting Up a Modern Development Environment in Emacs
+#+SUBTITLE: Using eglot, dape, corfu, flymake, eldoc and friends
+#+AUTHOR: James Dyer
+#+DATE: 2026-04-06
+#+OPTIONS: toc:3 num:nil ^:nil
+#+STARTUP: showall
+
+* Introduction
+
+This guide documents how to set up Emacs as a modern development environment, built entirely on packages that are either built-in or require minimal external dependencies. The approach favours Emacs's native infrastructure --- eglot over lsp-mode, flymake over flycheck, corfu over company --- and emphasises portability, including air-gapped and restricted environments.
+
+Two concrete worked examples are covered in detail:
+
+- *Java* (Linux): eglot + JDTLS + dape with java-debug-adapter
+- *C#/.NET* (Windows): eglot + csharp-ls + dape with netcoredbg
+
+The principles and patterns apply equally to any language with LSP and DAP support (Python, Go, Rust, C/C++, etc.).
+
+** What We Are Building
+
+| Layer              | Tool          | Status in Emacs 30 | Role                                            |
+|--------------------+---------------+--------------------+-------------------------------------------------|
+| Language Server    | *eglot*       | Built-in (29+)     | LSP client: completion, diagnostics, navigation |
+| Diagnostics        | *flymake*     | Built-in           | Displays errors/warnings inline                 |
+| Documentation      | *eldoc*       | Built-in           | Shows documentation at point                    |
+| Completion UI      | *corfu*       | External (MELPA)   | Popup completion interface                      |
+| Debugging          | *dape*        | External (MELPA)   | Debug Adapter Protocol client                   |
+| Project management | *project.el*  | Built-in           | Project root detection, file switching          |
+| Xref navigation    | *xref*        | Built-in           | Go-to-definition, find-references               |
+| Package management | *use-package* | Built-in (29+)     | Declarative package configuration               |
+
+All of the "External" packages are single-file or small packages with no dependencies beyond Emacs itself.
+
+* Part 1: Emacs Foundations
+
+** Installing Emacs
+
+Emacs 30.1 (or later) is recommended. It includes eglot, use-package, project.el, and flymake out of the box.
+
+*** Linux (Package Manager)
+
+#+begin_src bash
+# Arch Linux
+sudo pacman -S emacs
+
+# Fedora
+sudo dnf install emacs
+
+# Ubuntu/Debian (may need a PPA for 30+)
+sudo apt install emacs
+#+end_src
+
+*** Linux (From Source)
+
+If your distribution ships an older Emacs (e.g. openSUSE Leap 15.4 ships 27.2), build from source:
+
+#+begin_src bash
+mkdir -p ~/emacs-builds && cd ~/emacs-builds
+tar xzf emacs-30.1.tar.gz
+cd emacs-30.1
+./configure --prefix=$HOME/emacs-versions/emacs-30.1 \
+    --with-x-toolkit=gtk3 --with-gnutls --with-xml2 \
+    --with-jpeg --with-png --with-gif --with-tiff \
+    --with-xpm --with-cairo --with-harfbuzz --with-rsvg
+make -j$(nproc)
+make install
+#+end_src
+
+Then add to PATH:
+#+begin_src bash
+echo 'alias emacs="$HOME/emacs-versions/emacs-30.1/bin/emacs"' >> ~/.bashrc
+#+end_src
+
+*** Windows
+
+Download from the [[https://www.gnu.org/software/emacs/download.html][GNU Emacs download page]]. Install to a non-system location (e.g. =D:\source\emacs-30.1=) to avoid permission issues and keep everything portable.
+
+*** macOS
+
+#+begin_src bash
+brew install emacs-plus@30 --with-native-comp
+#+end_src
+
+** The Built-in Ecosystem
+
+One of the strengths of modern Emacs is how much works out of the box. Before reaching for external packages, understand what's already there:
+
+- *eglot* --- LSP client that integrates with flymake, eldoc, xref, completion-at-point, and imenu. One package wires up six features.
+- *flymake* --- Real-time diagnostic display. Eglot feeds it errors and warnings from the language server automatically.
+- *eldoc* --- Shows documentation in the echo area (or a dedicated buffer). Eglot provides hover information through it.
+- *xref* --- =M-.= (go to definition), =M-?= (find references), =M-,= (go back). Eglot provides the backend.
+- *project.el* --- =C-x p f= (find file in project), =C-x p g= (grep project), =C-x p c= (compile). Detects project roots via version control.
+- *completion-at-point* --- =C-M-i= or =M-TAB=. The raw completion interface that eglot populates. Corfu makes this prettier.
+- *imenu* --- =M-x imenu= to jump to definitions in the current buffer. Eglot enhances it with LSP symbol information.
+
+** Installing External Packages
+
+For the packages not built into Emacs (corfu, dape, etc.), there are two approaches.
+
+*** Online: From MELPA
+
+#+begin_src elisp
+;; Add MELPA to package archives (add to init.el)
+(require 'package)
+(add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/") t)
+(package-initialize)
+#+end_src
+
+Then install via =M-x package-install= or via =use-package= with =:ensure t=.
+
+*** Offline: Manual Installation
+
+For air-gapped environments, download package source files on a connected machine and copy them across.
+
+#+begin_src bash
+# Example: dape is a single file, no dependencies beyond Emacs 29+
+git clone https://github.com/svaante/dape.git /tmp/dape
+cp /tmp/dape/dape.el ~/.emacs.d/site-lisp/
+
+# Example: corfu
+git clone https://github.com/minad/corfu.git /tmp/corfu
+cp -r /tmp/corfu ~/.emacs.d/site-lisp/corfu
+#+end_src
+
+Then load from =site-lisp= in your init:
+#+begin_src elisp
+(add-to-list 'load-path "~/.emacs.d/site-lisp")
+(add-to-list 'load-path "~/.emacs.d/site-lisp/corfu")
+#+end_src
+
+* Part 2: Eglot (LSP Client)
+
+Eglot is the built-in LSP client. It automatically configures flymake, eldoc, xref, and completion-at-point when connected to a language server.
+
+** Basic Configuration
+
+#+begin_src elisp
+(use-package eglot
+  :hook
+  ((java-mode . eglot-ensure)
+   (csharp-mode . eglot-ensure)
+   ;; Add other language modes as needed:
+   ;; (python-mode . eglot-ensure)
+   ;; (rust-mode . eglot-ensure)
+   ;; (go-mode . eglot-ensure)
+   ))
+#+end_src
+
+=eglot-ensure= starts the language server automatically when you open a file in that mode. For manual control, use =M-x eglot= instead.
+
+** Configuring Language Servers
+
+Eglot knows about many language servers out of the box. For servers not in the default list, or to override the defaults, use =eglot-server-programs=.
+
+*** Java: JDTLS (Eclipse JDT Language Server)
+
+JDTLS is the standard Java language server. It supports Gradle and Maven projects, code completion, diagnostics, refactoring, and debugging (via a plugin).
+
+**** Installing JDTLS
+
+Download from [[https://download.eclipse.org/jdtls/milestones/][Eclipse JDTLS releases]] or build from source. The =bin/jdtls= script is a Python launcher that auto-detects the correct configuration.
+
+For offline environments, extract the full JDTLS distribution to a known path:
+#+begin_src bash
+mkdir -p ~/.emacs.d/bin
+tar xzf jdtls-<version>.tar.gz -C ~/.emacs.d/bin/jdtls
+#+end_src
+
+**** Eglot Configuration for JDTLS
+
+#+begin_src elisp
+(add-to-list 'eglot-server-programs
+             `((java-mode java-ts-mode) .
+               ("~/.emacs.d/bin/jdtls/bin/jdtls"
+                :initializationOptions
+                (:bundles ["~/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
+#+end_src
+
+The =:bundles= entry loads the java-debug-adapter plugin, which is needed for debugging (see the Dape section below).
+
+**** JDTLS Memory Tuning
+
+JDTLS can be memory-intensive on large projects. Increase the heap:
+#+begin_src elisp
+(add-to-list 'eglot-server-programs
+             `((java-mode java-ts-mode) .
+               ("~/.emacs.d/bin/jdtls/bin/jdtls"
+                "--jvm-arg=-Xmx4G"
+                :initializationOptions
+                (:bundles ["~/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
+#+end_src
+
+Or edit =~/.emacs.d/bin/jdtls/config_linux/config.ini= directly.
+
+*** C#: csharp-ls
+
+csharp-ls is a lightweight C# language server that is faster than OmniSharp.
+
+**** Installing csharp-ls
+
+With internet access:
+#+begin_src shell
+dotnet tool install --global csharp-ls
+#+end_src
+
+For offline/portable environments, download the NuGet package, extract the =tools/net9.0/any/= directory, and invoke via =dotnet=:
+#+begin_src bash
+# The .nupkg is a ZIP — extract tools/net9.0/any/ to your tools dir
+cp -r tools/net9.0/any /path/to/emacs/bin/csharp-ls
+#+end_src
+
+**** Eglot Configuration for csharp-ls
+
+#+begin_src elisp
+;; If installed as a global dotnet tool (on PATH)
+(add-to-list 'eglot-server-programs
+             '((csharp-mode csharp-ts-mode) . ("csharp-ls")))
+
+;; If running from an extracted DLL (portable/offline)
+(add-to-list 'eglot-server-programs
+             '((csharp-mode csharp-ts-mode) .
+               ("dotnet" "/path/to/csharp-ls/CSharpLanguageServer.dll")))
+#+end_src
+
+*** Other Language Servers (Quick Reference)
+
+Eglot includes defaults for these (just install the server and add a hook):
+
+| Language   | Server              | Install                                 |
+|------------+---------------------+-----------------------------------------|
+| Python     | pylsp / pyright     | =pip install python-lsp-server= / =npm install -g pyright= |
+| Rust       | rust-analyzer       | =rustup component add rust-analyzer=      |
+| Go         | gopls               | =go install golang.org/x/tools/gopls@latest= |
+| C/C++      | clangd              | Ships with LLVM/Clang                   |
+| TypeScript | typescript-language-server | =npm install -g typescript-language-server= |
+
+** Performance Tuning: Disabling Server Capabilities
+
+If eglot or the language server is sluggish, disable capabilities you don't need. This is especially useful on resource-constrained systems.
+
+#+begin_src elisp
+(setq eglot-ignored-server-capabilities
+      '(
+        ;; :hoverProvider                    ; Documentation on hover (eldoc)
+        ;; :completionProvider               ; Code completion
+        ;; :signatureHelpProvider            ; Function signature help
+        ;; :definitionProvider               ; Go to definition (M-.)
+        :typeDefinitionProvider           ; Go to type definition
+        :implementationProvider           ; Go to implementation
+        :declarationProvider              ; Go to declaration
+        ;; :referencesProvider               ; Find references (M-?)
+        ;; :documentHighlightProvider        ; Highlight symbol at point
+        :documentSymbolProvider           ; List symbols in buffer (imenu)
+        :workspaceSymbolProvider          ; List symbols in workspace
+        :codeActionProvider               ; Code actions (quick fixes)
+        :codeLensProvider                 ; Code lens
+        :documentFormattingProvider       ; Format buffer
+        :documentRangeFormattingProvider  ; Format region
+        :documentOnTypeFormattingProvider ; On-type formatting
+        ;; :renameProvider                   ; Rename symbol
+        :documentLinkProvider             ; Highlight links
+        :colorProvider                    ; Colour references
+        :foldingRangeProvider             ; Code folding
+        :executeCommandProvider           ; Custom server commands
+        :inlayHintProvider                ; Inlay hints
+        ))
+#+end_src
+
+Uncomment a line to re-enable that capability. The commented-out entries above represent a good baseline --- hover, completion, go-to-definition, references, highlight, and rename are the most commonly used features.
+
+** Process Output Tuning
+
+For large projects, increase the read buffer size to avoid bottlenecks:
+
+#+begin_src elisp
+(setq read-process-output-max (* 1024 1024))  ; 1MB (default is 4KB)
+#+end_src
+
+* Part 3: Flymake (Diagnostics)
+
+Flymake is Emacs's built-in on-the-fly syntax checking framework. When eglot is active, it automatically feeds diagnostics from the language server into flymake.
+
+** Configuration
+
+#+begin_src elisp
+(use-package flymake
+  :hook (prog-mode . flymake-mode)
+  :bind
+  (("M-n" . flymake-goto-next-error)
+   ("M-p" . flymake-goto-prev-error)
+   ("C-S-m" . my/toggle-flymake-diagnostics))
+  :custom
+  ;; Show diagnostics at end of line (Emacs 30+)
+  ;; Set to nil if you find it too noisy
+  (flymake-show-diagnostics-at-end-of-line t)
+  :config
+  ;; Pin diagnostics buffer to the bottom, like VS Code's Problems panel
+  (add-to-list 'display-buffer-alist
+               '("\\*Flymake"
+                 (display-buffer-in-side-window)
+                 (side . bottom)
+                 (slot . 0)
+                 (window-height . 0.25))))
+#+end_src
+
+** Problems Panel (VS Code =C-S-m= Equivalent)
+
+VS Code's =Ctrl+Shift+M= toggles a "Problems" panel showing all diagnostics across the workspace. The following function replicates this behaviour using =flymake-show-project-diagnostics=, pinned to a bottom side window:
+
+#+begin_src elisp
+(defun my/toggle-flymake-diagnostics ()
+  "Toggle the project diagnostics buffer, mimicking VS Code's C-S-m."
+  (interactive)
+  (let ((buf (seq-find (lambda (b)
+                         (eq (buffer-local-value 'major-mode b)
+                             'flymake-project-diagnostics-mode))
+                       (buffer-list))))
+    (if (and buf (get-buffer-window buf))
+        (delete-window (get-buffer-window buf))
+      (flymake-show-project-diagnostics))))
+#+end_src
+
+Note: =C-S-m= only works in GUI Emacs --- in a terminal it is indistinguishable from =C-m= (RET). If you use terminal Emacs, bind to an alternative such as =C-c ! p=.
+
+** Key Commands
+
+| Key         | Command                            | Action                          |
+|-------------+------------------------------------+---------------------------------|
+| =C-S-m=     | =my/toggle-flymake-diagnostics=    | Toggle project diagnostics panel |
+| =M-n=       | =flymake-goto-next-error=          | Jump to next diagnostic         |
+| =M-p=       | =flymake-goto-prev-error=          | Jump to previous diagnostic     |
+| =C-c ! l=   | =flymake-show-buffer-diagnostics=  | List all diagnostics in buffer  |
+| =C-c ! p=   | =flymake-show-project-diagnostics= | List diagnostics across project |
+
+Diagnostics appear as underlined text with faces indicating severity (error, warning, note).
+
+* Part 4: Eldoc (Documentation)
+
+Eldoc shows contextual documentation in the echo area. With eglot active, it displays type signatures and hover documentation from the language server.
+
+** Configuration
+
+#+begin_src elisp
+(use-package eldoc
+  :custom
+  ;; Don't resize echo area constantly
+  (eldoc-echo-area-use-multiline-p nil)
+  ;; Or use a dedicated buffer for verbose docs:
+  ;; (eldoc-echo-area-use-multiline-p t)
+  )
+#+end_src
+
+For more detailed documentation, use =C-h .= (=eldoc-doc-buffer=) to open the full documentation in a separate buffer.
+
+* Part 5: Corfu (Completion UI)
+
+Corfu provides a modern popup completion interface that works with Emacs's native =completion-at-point= system. Since eglot provides a completion-at-point backend, corfu automatically shows LSP completions.
+
+** Configuration
+
+#+begin_src elisp
+(use-package corfu
+  ;; :ensure t  ; or :load-path for offline
+  :custom
+  (corfu-auto nil)          ; No automatic popup (invoke with C-M-i)
+  (corfu-cycle t)           ; Cycle through candidates
+  (corfu-preselect 'first)  ; Pre-select first candidate
+  (corfu-quit-no-match nil) ; Don't quit when no match
+  :init
+  (global-corfu-mode))
+#+end_src
+
+*** Auto-completion vs Manual Completion
+
+Setting =corfu-auto= to =nil= means completion only appears when you invoke it (=C-M-i= or =M-TAB=). This avoids constant LSP requests which can cause slowdowns, especially on large projects or resource-constrained systems.
+
+If you prefer auto-completion:
+#+begin_src elisp
+(setq corfu-auto t)
+(setq corfu-auto-delay 0.2)   ; Delay in seconds
+(setq corfu-auto-prefix 2)    ; Minimum characters before popup
+#+end_src
+
+** Corfu with Eglot
+
+No additional configuration is needed. Eglot registers itself as a =completion-at-point-functions= backend, and corfu displays whatever that system provides.
+
+To invoke completion manually: =C-M-i= (=completion-at-point=) or =M-TAB=.
+
+* Part 6: Dape (Debug Adapter Protocol)
+
+Dape is a lightweight DAP client for Emacs. It integrates with eglot and supports any debug adapter that speaks the DAP protocol.
+
+** Installation
+
+#+begin_src elisp
+(use-package dape
+  ;; :ensure t  ; or :load-path for offline
+  :config
+  (setq dape-request-timeout 30))  ; JVM/CLR startup can be slow
+#+end_src
+
+** IDE-Style Keybindings
+
+#+begin_src elisp
+(use-package dape
+  :bind
+  (("<f5>"    . dape)                  ; Start/continue debugging
+   ("<S-f5>"  . dape-kill)             ; Stop debugging
+   ("<C-f5>"  . dape-restart)          ; Restart session
+   ("<f9>"    . dape-breakpoint-toggle) ; Toggle breakpoint
+   ("<f10>"   . dape-next)             ; Step over
+   ("<f11>"   . dape-step-in)          ; Step into
+   ("<S-f11>" . dape-step-out)))       ; Step out
+#+end_src
+
+| Key     | Action            | VS Code Equivalent |
+|---------+-------------------+--------------------|
+| =F5=    | Start / Continue  | =F5=               |
+| =S-F5=  | Stop              | =Shift+F5=         |
+| =C-F5=  | Restart           | =Ctrl+F5=          |
+| =F9=    | Toggle breakpoint | =F9=               |
+| =F10=   | Step over         | =F10=              |
+| =F11=   | Step into         | =F11=              |
+| =S-F11= | Step out          | =Shift+F11=        |
+
+** Java Debugging with JDTLS
+
+Java debugging requires the *java-debug-adapter* plugin loaded as a JDTLS bundle (configured in the eglot section above). The debug adapter runs inside JDTLS itself, so dape needs a helper function to ask JDTLS to start a debug session.
+
+*** Building java-debug-adapter
+
+#+begin_src bash
+git clone https://github.com/microsoft/java-debug.git
+cd java-debug
+./mvnw clean install -DskipTests
+# Output: com.microsoft.java.debug.plugin/target/com.microsoft.java.debug.plugin-<VERSION>.jar
+#+end_src
+
+Copy the jar to your JDTLS directory and reference it in the =:bundles= option of your eglot configuration.
+
+*** JDTLS Debug Session Helper
+
+#+begin_src elisp
+(defun dape--jdtls-start-debug-session (config)
+  "Resolve classpath via JDTLS, start a debug session, and configure dape."
+  (let ((server (eglot-current-server)))
+    (unless server
+      (user-error "Eglot is not active, run M-x eglot first"))
+    (let* ((main-class (plist-get config :mainClass))
+           (project-name (plist-get config :projectName))
+           ;; Ask JDTLS to resolve the classpath
+           (classpath-result (eglot-execute-command
+                              server "vscode.java.resolveClasspath"
+                              (vector main-class project-name)))
+           (module-paths (aref classpath-result 0))
+           (class-paths (aref classpath-result 1))
+           ;; Start the debug adapter session inside JDTLS
+           (port (eglot-execute-command
+                  server "vscode.java.startDebugSession" nil)))
+      (setq config (plist-put config 'port port))
+      (setq config (plist-put config 'host "localhost"))
+      (setq config (plist-put config :modulePaths module-paths))
+      (setq config (plist-put config :classPaths class-paths))
+      config)))
+#+end_src
+
+*** Java Launch Configurations
+
+#+begin_src elisp
+;; Launch a Java application
+(add-to-list 'dape-configs
+  '(java-launch
+    modes (java-mode java-ts-mode)
+    fn dape--jdtls-start-debug-session
+    :type "java"
+    :request "launch"
+    :mainClass "com.example.Main"     ; <-- your main class
+    :projectName "my-project"         ; <-- Gradle/Maven module name
+    :cwd "/path/to/project"
+    :console "internalConsole"
+    :stopAtEntry t))
+
+;; Attach to a running JVM (e.g. started with --debug-jvm)
+(add-to-list 'dape-configs
+  '(java-attach
+    modes (java-mode java-ts-mode)
+    host "localhost" port 5005
+    :type "java"
+    :request "attach"
+    :hostName "localhost"
+    :port 5005))
+#+end_src
+
+**** Usage
+
+*Launch mode*: Open a Java file, ensure eglot is connected, then =F5= (=M-x dape=) and select a launch configuration.
+
+*Attach mode*: Start the application with debug flags first:
+#+begin_src bash
+./gradlew myTask --debug-jvm  # Suspends on port 5005
+#+end_src
+Then =F5= and select the attach configuration.
+
+** C#/.NET Debugging with netcoredbg
+
+netcoredbg is Samsung's open-source .NET debugger that implements the DAP protocol.
+
+*** Installing netcoredbg
+
+Download from [[https://github.com/Samsung/netcoredbg/releases][Samsung's GitHub releases]] and extract to a known location.
+
+*** C#/.NET Launch Configuration
+
+#+begin_src elisp
+(add-to-list 'dape-configs
+  '(netcoredbg-launch
+    modes (csharp-mode csharp-ts-mode)
+    command "/path/to/netcoredbg"
+    command-args ("--interpreter=vscode")
+    :type "coreclr"
+    :request "launch"
+    :program "/path/to/bin/Debug/net9.0/MyApp.dll"
+    :cwd "/path/to/project"
+    :console "internalConsole"
+    :stopAtEntry t))
+#+end_src
+
+*** Helper for Multiple .NET Projects
+
+When working with a solution containing multiple projects, a helper function avoids repetition:
+
+#+begin_src elisp
+(defvar my-netcoredbg-path "/path/to/netcoredbg"
+  "Path to netcoredbg executable.")
+(defvar my-project-root "/path/to/solution"
+  "Root directory of the solution.")
+(defvar my-build-config "Debug"
+  "Build configuration (Debug or Release).")
+
+(defun my-dape-dotnet-config (component-name dll-name &optional stop-at-entry)
+  "Create a dape configuration for a .NET component.
+COMPONENT-NAME is the project directory name.
+DLL-NAME is the DLL filename without extension."
+  (let* ((component-dir (format "%s/%s" my-project-root component-name))
+         (bin-path (format "%s/bin/%s/net9.0" component-dir my-build-config))
+         (dll-path (format "%s/%s.dll" bin-path dll-name))
+         (config-name (intern (format "netcoredbg-launch-%s"
+                                      (downcase component-name)))))
+    `(,config-name
+      modes (csharp-mode csharp-ts-mode)
+      command ,my-netcoredbg-path
+      command-args ("--interpreter=vscode")
+      :type "coreclr"
+      :request "launch"
+      :program ,dll-path
+      :cwd ,component-dir
+      :console "internalConsole"
+      :stopAtEntry ,(if stop-at-entry t :json-false))))
+
+;; Register configurations
+(dolist (config (list
+                 (my-dape-dotnet-config "ServerApp" "ServerApp" t)
+                 (my-dape-dotnet-config "ClientApp" "ClientApp" t)
+                 (my-dape-dotnet-config "Tests" "Tests" t)))
+  (add-to-list 'dape-configs config))
+#+end_src
+
+** Dape Buffer Arrangement
+
+#+begin_src elisp
+;; GUD-style layout (source + locals + stack + breakpoints)
+(setq dape-buffer-window-arrangement 'gud)
+#+end_src
+
+* Part 7: Project.el and Compilation
+
+** Project Detection
+
+=project.el= detects project roots via version control (=.git=, =.hg=, etc.). For projects without VCS, drop an empty =.project= file at the root.
+
+Key bindings (all under =C-x p= prefix):
+
+| Key       | Command               | Action                    |
+|-----------+-----------------------+---------------------------|
+| =C-x p f= | =project-find-file=    | Find file in project      |
+| =C-x p g= | =project-find-regexp=  | Grep across project       |
+| =C-x p c= | =project-compile=      | Run compile in project    |
+| =C-x p b= | =project-switch-to-buffer= | Switch to project buffer |
+| =C-x p d= | =project-dired=        | Dired at project root     |
+
+** Build Integration with compile
+
+Use =M-x compile= (or =C-x p c= for project-scoped) to run builds directly from Emacs. Errors are parsed and navigable with =M-g n= / =M-g p=.
+
+#+begin_src elisp
+;; Java (Gradle)
+(setq compile-command "cd /path/to/project/java && ./gradlew build")
+
+;; C# (.NET)
+;; (setq compile-command "dotnet build")
+
+;; C# (MSBuild)
+;; (setq compile-command "msbuild MyProject.csproj /p:Configuration=Debug")
+#+end_src
+
+For offline Java builds (when Gradle caches are pre-populated):
+#+begin_src bash
+./gradlew build --offline
+#+end_src
+
+* Part 8: Xref (Code Navigation)
+
+Xref is Emacs's cross-reference framework. Eglot provides the backend automatically.
+
+| Key   | Command                | Action                        |
+|-------+------------------------+-------------------------------|
+| =M-.= | =xref-find-definitions= | Go to definition              |
+| =M-?= | =xref-find-references=  | Find all references           |
+| =M-,= | =xref-go-back=          | Return to previous location   |
+| =C-M-.= | =xref-find-apropos=    | Search symbols by pattern     |
+
+These work automatically when eglot is connected. No configuration needed.
+
+* Part 9: Additional Useful Packages
+
+** web-mode (HTML/Template Editing)
+
+Excellent for editing Razor pages (=.cshtml=), JSP, Jinja, and other template formats:
+
+#+begin_src elisp
+(use-package web-mode
+  ;; :ensure t
+  :mode ("\\.cshtml\\'" "\\.html\\'")
+  :bind (:map web-mode-map ("M-;" . nil)))  ; Avoid keybinding conflict
+#+end_src
+
+** highlight-indent-guides
+
+Visual indentation guides, useful for deeply nested template files:
+
+#+begin_src elisp
+(use-package highlight-indent-guides
+  ;; :ensure t
+  :hook ((html-mode web-mode) . highlight-indent-guides-mode)
+  :custom
+  (highlight-indent-guides-method 'character)
+  (highlight-indent-guides-auto-enabled nil))
+#+end_src
+
+** ztree (Directory Comparison)
+
+Visual directory diff tool within Emacs:
+
+#+begin_src elisp
+(use-package ztree
+  ;; :ensure t
+  :config
+  (setq ztree-diff-filter-list
+        '("build" "\\.dll" "\\.git" "bin" "obj"))
+  :bind ("C-c z d" . ztree-diff))
+#+end_src
+
+** File Mode Associations
+
+#+begin_src elisp
+(add-to-list 'auto-mode-alist '("\\.csproj\\'" . nxml-mode))
+(add-to-list 'auto-mode-alist '("\\.proto\\'" . protobuf-mode))
+(add-to-list 'auto-mode-alist '("\\.gradle\\'" . groovy-mode))
+(add-to-list 'auto-mode-alist '("\\.gradle\\.kts\\'" . kotlin-mode))
+#+end_src
+
+* Part 10: Windows-Specific Setup
+
+On Windows, Emacs needs help finding external tools since there is no standard =/usr/bin=. The approach is to keep all tools within the Emacs installation directory for portability.
+
+** Directory Structure
+
+#+begin_example
+D:\source\emacs-30.1\
++-- bin\
+|   +-- emacs.exe, runemacs.exe, etc.
+|   +-- PortableGit\          # Git for version control
+|   +-- csharp-ls\            # C# Language Server
+|   +-- netcoredbg\           # .NET debugger
+|   +-- hunspell\             # Spell checking
+|   +-- find\                 # ripgrep for fast searching
+|   +-- ImageMagick-...\      # Image processing
+|   +-- ffmpeg-...\           # Video processing
++-- share\
+    +-- emacs\...
+#+end_example
+
+** PATH Configuration
+
+#+begin_src elisp
+(when (eq system-type 'windows-nt)
+  (let* ((emacs-bin (expand-file-name "~/bin"))
+         (xPaths
+          `(,emacs-bin
+            ,(concat emacs-bin "/PortableGit/bin")
+            ,(concat emacs-bin "/PortableGit/usr/bin")
+            ,(concat emacs-bin "/hunspell/bin")
+            ,(concat emacs-bin "/find")              ; ripgrep
+            ,(concat emacs-bin "/netcoredbg")
+            ,(concat emacs-bin "/csharp-ls/tools/net9.0/any")
+            ,(concat emacs-bin "/ImageMagick-portable-Q16-x64")
+            ,(concat emacs-bin "/ffmpeg-essentials/bin")))
+         (winPaths (getenv "PATH")))
+    (setenv "PATH" (concat (mapconcat 'identity xPaths ";") ";" winPaths))
+    (setq exec-path (append xPaths (parse-colon-path winPaths)))))
+#+end_src
+
+* Part 11: Offline / Air-Gapped Environments
+
+Setting up Emacs in an environment with no internet access requires pre-staging all components.
+
+** Checklist
+
+| Component              | How to Prepare                                    |
+|------------------------+---------------------------------------------------|
+| Emacs source tarball   | Download =emacs-30.1.tar.gz= (~70 MB)              |
+| Language server         | Download/build and copy the binary/jar            |
+| Debug adapter           | Download and copy the binary/jar                  |
+| Emacs packages (dape, corfu, etc.) | Clone repos, copy =.el= files to =site-lisp= |
+| Build tool caches       | Run a full build online to populate caches        |
+
+** Gradle Offline Builds (Java)
+
+Run once with internet to populate the cache:
+#+begin_src bash
+cd /path/to/project/java
+./gradlew build          # Downloads everything to ~/.gradle/
+#+end_src
+
+Then all subsequent builds work offline:
+#+begin_src bash
+./gradlew build --offline
+#+end_src
+
+Transfer =~/.gradle/= to the target machine. The essential directories are:
+
+| Directory              | Size  | Purpose                    |
+|------------------------+-------+----------------------------|
+| =wrapper/dists/=        | ~270M | Gradle distribution binary |
+| =caches/modules-2/=     | ~37M  | Downloaded dependency jars |
+
+The rest (=generated-gradle-jars=, =transforms=, =daemon/=, etc.) is regenerated on first build.
+
+** .NET Offline Builds (C#)
+
+For NuGet package caching:
+#+begin_src bash
+dotnet restore --packages ./local-packages
+#+end_src
+
+Then configure NuGet to use the local cache on the target.
+
+* Part 12: Putting It All Together
+
+Here is a minimal but complete =init.el= that configures the full stack. Adapt the language-specific sections for your needs.
+
+#+begin_src elisp
+;; -*- lexical-binding: t; -*-
+
+;; --- Package Setup ---
+(require 'package)
+(add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/") t)
+(package-initialize)
+
+;; For offline: uncomment and set load-paths instead
+;; (add-to-list 'load-path "~/.emacs.d/site-lisp")
+;; (add-to-list 'load-path "~/.emacs.d/site-lisp/corfu")
+
+;; --- Performance ---
+(setq read-process-output-max (* 1024 1024))
+(setq gc-cons-threshold 100000000)  ; 100MB during startup
+
+;; --- Eglot (LSP) ---
+(use-package eglot
+  :hook
+  ((java-mode . eglot-ensure)
+   (csharp-mode . eglot-ensure))
+  :config
+  ;; Java: JDTLS
+  (add-to-list 'eglot-server-programs
+               `((java-mode java-ts-mode) .
+                 ("~/.emacs.d/bin/jdtls/bin/jdtls"
+                  :initializationOptions
+                  (:bundles ["~/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
+  ;; C#: csharp-ls
+  ;; (add-to-list 'eglot-server-programs
+  ;;              '((csharp-mode csharp-ts-mode) . ("csharp-ls")))
+  )
+
+;; --- Flymake (Diagnostics) ---
+(defun my/toggle-flymake-diagnostics ()
+  "Toggle the project diagnostics buffer, mimicking VS Code's C-S-m."
+  (interactive)
+  (let ((buf (seq-find (lambda (b)
+                         (eq (buffer-local-value 'major-mode b)
+                             'flymake-project-diagnostics-mode))
+                       (buffer-list))))
+    (if (and buf (get-buffer-window buf))
+        (delete-window (get-buffer-window buf))
+      (flymake-show-project-diagnostics))))
+
+(use-package flymake
+  :hook (prog-mode . flymake-mode)
+  :bind
+  (("M-n" . flymake-goto-next-error)
+   ("M-p" . flymake-goto-prev-error)
+   ("C-S-m" . my/toggle-flymake-diagnostics))
+  :config
+  (add-to-list 'display-buffer-alist
+               '("\\*Flymake"
+                 (display-buffer-in-side-window)
+                 (side . bottom)
+                 (slot . 0)
+                 (window-height . 0.25))))
+
+;; --- Eldoc (Documentation) ---
+(use-package eldoc
+  :custom
+  (eldoc-echo-area-use-multiline-p nil))
+
+;; --- Corfu (Completion UI) ---
+(use-package corfu
+  :ensure t
+  :custom
+  (corfu-auto nil)
+  (corfu-cycle t)
+  (corfu-preselect 'first)
+  :init
+  (global-corfu-mode))
+
+;; --- Dape (Debugging) ---
+(use-package dape
+  :ensure t
+  :bind
+  (("<f5>"    . dape)
+   ("<S-f5>"  . dape-kill)
+   ("<C-f5>"  . dape-restart)
+   ("<f9>"    . dape-breakpoint-toggle)
+   ("<f10>"   . dape-next)
+   ("<f11>"   . dape-step-in)
+   ("<S-f11>" . dape-step-out))
+  :config
+  (setq dape-request-timeout 30))
+#+end_src
+
+* Troubleshooting
+
+** Eglot won't start / "Cannot find server"
+
+1. Check the server is on your PATH: =M-x getenv RET PATH=
+2. Try running the server command manually in a shell
+3. Check =*eglot-events*= buffer (=M-x eglot-events-buffer=) for detailed errors
+4. For JDTLS: ensure you open a file under the project root so it finds =settings.gradle.kts= or =pom.xml=
+
+** LSP is slow or uses too much memory
+
+1. Disable unused server capabilities (see =eglot-ignored-server-capabilities= above)
+2. Increase =read-process-output-max=
+3. For JDTLS: increase =-Xmx= heap size
+4. Set =corfu-auto= to =nil= and complete manually
+5. For JDTLS: delete the workspace cache (=~/.cache/jdtls/=) and restart
+
+** Debugger won't attach or launch
+
+1. Check the =*dape-repl*= buffer for error messages
+2. Verify the debug adapter runs: e.g. =netcoredbg --version= or check JDTLS bundles
+3. For Java: ensure eglot is connected before starting dape
+4. For .NET: ensure the project is built in Debug configuration
+5. For Java attach mode: ensure the JVM was started with =--debug-jvm= or equivalent JDWP flags
+
+** JDTLS workspace corruption
+
+If JDTLS gets confused after project structure changes:
+#+begin_src bash
+rm -rf ~/.cache/jdtls/   # Or wherever -data points
+#+end_src
+Then =M-x eglot-shutdown= followed by =M-x eglot=.
+
+** Wayland display issues (Linux)
+
+If running in a VM accessed via SPICE, or if accessibility features misbehave under Wayland, switch to X11:
+#+begin_src ini
+# /etc/gdm/custom.conf
+[daemon]
+WaylandEnable=false
+#+end_src
+
+** SSH host key issues on Arch Linux
+
+Qt =ErrorHandler::Throw= warnings from desktop SSH agents can interfere with SSH prompts. Suppress with:
+#+begin_src bash
+ssh -p 2222 user@host 2>/dev/null
+#+end_src
