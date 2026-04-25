@@ -1,0 +1,80 @@
+- Offline / Air-Gapped Setup
+
+Notes for working on this project (Emacs + eglot + jdtls in particular) on a machine with no internet access. Without these settings, jdtls hangs around 69% on import while Gradle waits ~30s per host trying to reach =plugins.gradle.org=, =repo.maven.apache.org=, and =services.gradle.org=.
+
+* What reaches the network on a fresh import
+
+- *Gradle Plugin Portal* — versioned plugins declared in subprojects:
+  - =com.vanniktech.maven.publish:0.34.0= (=client=, =client_evolved=, =client_common=, =session=, =protobuf=, =api/HLA1516-2010=, =api/HLA1516-2025=)
+  - =com.google.protobuf:0.9.4= (=cuis-proto=)
+- *Maven Central* — every subproject =build.gradle.kts= declares =mavenCentral()=.
+- *Gradle distribution check* — =gradle/wrapper/gradle-wrapper.properties= points at =services.gradle.org= even when the distribution is already cached under =~/.gradle/wrapper/dists/=.
+
+* 1. Pre-cache everything while online
+
+Before going offline, from =java/=:
+
+#+begin_src bash
+./gradlew help --refresh-dependencies
+./gradlew tasks
+./gradlew build
+#+end_src
+
+This populates =~/.gradle/caches/modules-2/= and =~/.gradle/wrapper/dists/gradle-9.0.0-bin/= with every plugin, dependency and the Gradle distribution itself.
+
+* 2. Force Gradle into offline mode
+
+Create =~/.gradle/gradle.properties=:
+
+#+begin_src properties
+org.gradle.offline=true
+org.gradle.daemon=true
+org.gradle.configureondemand=false
+
+# Fail fast instead of waiting ~30s per lookup
+systemProp.org.gradle.internal.http.connectionTimeout=3000
+systemProp.org.gradle.internal.http.socketTimeout=3000
+systemProp.org.gradle.internal.network.connection.timeout=3000
+systemProp.org.gradle.internal.network.read.timeout=3000
+#+end_src
+
+This is the single most effective change for the eglot 69% stall.
+
+* 3. Tell jdtls to import Gradle offline
+
+Add to your Emacs config:
+
+#+begin_src elisp
+(with-eval-after-load 'eglot
+  (setq-default eglot-workspace-configuration
+                '((:java
+                   (:import (:gradle (:offline (:enabled t))))
+                   (:configuration (:updateBuildConfiguration "automatic"))
+                   (:maven (:downloadSources :json-false
+                            :downloadJavadoc :json-false))))))
+#+end_src
+
+Eclipse JDT.LS reads =java.import.gradle.offline.enabled= and skips the remote refresh when importing the Gradle model. Disabling source/javadoc downloads avoids a second class of timeouts.
+
+* 4. Optional — bypass the wrapper distribution check
+
+If =gradle-9.0.0= is already extracted locally, point jdtls at it directly so the wrapper never probes =services.gradle.org=:
+
+#+begin_src elisp
+(:java (:import (:gradle (:wrapper (:enabled :json-false)
+                          :home "/path/to/gradle-9.0.0"))))
+#+end_src
+
+* 5. Verifying
+
+From =java/=:
+
+#+begin_src bash
+./gradlew --offline projects
+#+end_src
+
+Should return the module list immediately. If it reports a missing plugin or artifact, that's the one to cache while online (step 1).
+
+* Debugging eglot/jdtls progress
+
+While reproducing the 69% hang, watch the =*EGLOT events*= and =*jdt.ls*= buffers. The progress notification text usually identifies the stage — "Synchronizing Gradle build" is the network-bound one.
