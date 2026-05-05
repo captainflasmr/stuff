@@ -3,14 +3,17 @@
 #+SEQ_TODO: TODO WAITING | DONE
 
 #+HTML_HEAD: <style>
-#+HTML_HEAD:   /* Minimal list reset */
-#+HTML_HEAD:   ul { list-style-type: none; padding-left: 20px; }
-#+HTML_HEAD:   li { margin-bottom: 5px; font-family: sans-serif; }
+#+HTML_HEAD:   /* Re-enable bullets and provide space for them */
+#+HTML_HEAD:   ul { list-style-type: disc; padding-left: 25px; }
+#+HTML_HEAD:   li { margin-bottom: 5px; font-family: sans-serif; display: list-item; }
+#+HTML_HEAD:   
+#+HTML_HEAD:   /* Ensure nested lists use different bullet shapes */
+#+HTML_HEAD:   ul ul { list-style-type: circle; }
 #+HTML_HEAD:   
 #+HTML_HEAD:   /* State Colors */
-#+HTML_HEAD:   .todo { color: #d93025; font-weight: bold; }    /* Red */
-#+HTML_HEAD:   .WAITING { color: #f29900; font-weight: bold; } /* Orange */
-#+HTML_HEAD:   .done { color: #1e8e3e; font-weight: bold; }    /* Green */
+#+HTML_HEAD:   .todo { color: #d93025; font-weight: bold; margin-right: 5px; }
+#+HTML_HEAD:   .WAITING { color: #f29900; font-weight: bold; margin-right: 5px; }
+#+HTML_HEAD:   .done { color: #1e8e3e; font-weight: bold; margin-right: 5px; }
 #+HTML_HEAD: </style>
 
 * Task List
