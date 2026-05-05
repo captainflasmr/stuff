@@ -1,0 +1,20 @@
+#+TITLE: 
+#+OPTIONS: toc:nil num:nil html-style:nil html-postamble:nil html-preamble:nil H:1
+#+SEQ_TODO: TODO WAITING | DONE
+
+#+HTML_HEAD: <style>
+#+HTML_HEAD:   /* Minimal list reset */
+#+HTML_HEAD:   ul { list-style-type: none; padding-left: 20px; }
+#+HTML_HEAD:   li { margin-bottom: 5px; font-family: sans-serif; }
+#+HTML_HEAD:   
+#+HTML_HEAD:   /* State Colors */
+#+HTML_HEAD:   .todo { color: #d93025; font-weight: bold; }    /* Red */
+#+HTML_HEAD:   .WAITING { color: #f29900; font-weight: bold; } /* Orange */
+#+HTML_HEAD:   .done { color: #1e8e3e; font-weight: bold; }    /* Green */
+#+HTML_HEAD: </style>
+
+* Task List
+** TODO Write the introductory chapter
+*** WAITING Receive feedback from the design team
+** DONE Setup the repository
+** TODO Review the pull requests
