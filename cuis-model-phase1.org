@@ -1,0 +1,533 @@
+#+title: CUIS SysML Model Definition — Phase 1
+
+This file defines the Phase 1 SysML model for the Common User Interface Server (CUIS).
+It follows the MagicGrid tutorial approach: top-level component structure, exchange items,
+interface blocks, and high-level behaviour. Deeper internals (sub-component decomposition,
+constraints, state machines, sequence diagrams) are in Phase 2.
+
+It is consumed by =sysml-gen.el= to produce the Jython macro that builds the model in MagicDraw.
+
+* Packages
+
+| Name                   | Parent                 |
+|------------------------+------------------------|
+| CUIS_High_Level_Design | _root_                 |
+| ExchangeItems          | CUIS_High_Level_Design |
+| Interfaces             | CUIS_High_Level_Design |
+| Blocks                 | CUIS_High_Level_Design |
+| Relationships          | CUIS_High_Level_Design |
+| Activities             | CUIS_High_Level_Design |
+
+* DataTypes
+
+Exchange Items (data flowing between CUIS and external actors or between
+internal sub-components) are modelled as DataTypes in the ExchangeItems package.
+External exchange items carry data across the UF↔CUIS and RTI↔CUIS boundaries.
+Internal exchange items flow between CUIS sub-components.
+
+** UF_PubSub_Request
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property     | Type              |
+|--------------+-------------------|
+| class_handle | HLAhandle         |
+| attr_handles | Attributes        |
+| client_id    |                   |
+
+** UF_Update_Request
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property        | Type             |
+|-----------------+------------------|
+| instance_handle | HLAhandle        |
+| attr_values     | Attribute_Values |
+| tag             |                   |
+
+** UF_Interaction_Request
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property           | Type             |
+|--------------------+------------------|
+| interaction_handle | HLAhandle        |
+| param_values       | Parameter_Values |
+| tag                |                   |
+
+** UF_Session_Request
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property         | Type |
+|------------------+------|
+| client_name      |      |
+| endpoint_address |      |
+| client_id        |      |
+
+** RTI_Callback
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property        | Type             |
+|-----------------+------------------|
+| callback_type   |                  |
+| instance_handle | HLAhandle        |
+| attr_values     | Attribute_Values |
+| param_values    | Parameter_Values |
+
+** Client_Callback
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property        | Type             |
+|-----------------+------------------|
+| callback_type   |                  |
+| instance_handle | HLAhandle        |
+| attr_values     | Attribute_Values |
+| param_values    | Parameter_Values |
+
+** RTI_Federation_Control
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property        | Type |
+|-----------------+------|
+| federation_name |      |
+| federate_name   |      |
+| fom_path        |      |
+
+** PubSub_Record
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property          | Type |
+|-------------------+------|
+| object_class_name |      |
+| attribute_names   |      |
+| client_id         |      |
+
+** Client_Record
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property         | Type        |
+|------------------+-------------|
+| client_id        |             |
+| client_name      |             |
+| endpoint_address |             |
+| state            | ClientState |
+
+** Encoded_Values
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property   | Type       |
+|------------+------------|
+| raw_bytes  |            |
+| endianness | Endianness |
+
+** HLAhandle
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property     | Type |
+|--------------+------|
+| opaque_bytes |      |
+
+** Attribute_Values
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property | Type |
+|----------+------|
+| name     |      |
+| value    |      |
+
+** Parameter_Values
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property | Type |
+|----------+------|
+| name     |      |
+| value    |      |
+
+** Attributes
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property          | Type      |
+|-------------------+-----------|
+| attribute_handles | HLAhandle |
+
+* Enumerations
+
+** ClientState
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:LITERALS: DISCONNECTED, CONNECTED, ACTIVE, ERROR
+:END:
+
+** Endianness
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:LITERALS: BIG_ENDIAN, LITTLE_ENDIAN
+:END:
+
+* Blocks
+
+** CUIS_Architecture
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Top-level component. CUIS is comprised of sub-components that communicate
+via logical interfaces (mapped to gRPC/protobuf service definitions).
+
+*** Value Properties
+
+*** Part Properties
+
+| Property       | Type           |
+|----------------+----------------|
+| grpcServices   | GRPCServices   |
+| rtiAdapter     | RTIAdapter     |
+| routingEngine  | RoutingEngine  |
+| clientRegistry | ClientRegistry |
+| sessionManager | SessionManager |
+| encodingLayer  | EncodingLayer  |
+
+*** Reference Properties
+
+** GRPCServices
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Receives gRPC requests from UF Sub-Apps and dispatches them
+to the appropriate internal sub-component.
+
+*** Value Properties
+
+| Property               | Type |
+|------------------------+------|
+| listen_port            |      |
+| max_concurrent_streams |      |
+
+*** Part Properties
+
+*** Reference Properties
+
+| Property       | Type           |
+|----------------+----------------|
+| routingEngine  | RoutingEngine  |
+| sessionManager | SessionManager |
+| encodingLayer  | EncodingLayer  |
+
+** RTIAdapter
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Mediates all interactions with the HLA RTI. Converts between
+protobuf Data_Value representation and HLA native encoding.
+
+*** Value Properties
+
+*** Part Properties
+
+*** Reference Properties
+
+| Property      | Type          |
+|---------------+---------------|
+| encodingLayer | EncodingLayer |
+
+** RoutingEngine
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Routes RTI callbacks to the correct Sub-App based on subscription state.
+
+*** Value Properties
+
+*** Part Properties
+
+*** Reference Properties
+
+| Property       | Type           |
+|----------------+----------------|
+| clientRegistry | ClientRegistry |
+
+** ClientRegistry
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Tracks connected Sub-App clients and their session state.
+
+*** Value Properties
+
+| Property    | Type |
+|-------------+------|
+| max_clients |      |
+
+*** Part Properties
+
+*** Reference Properties
+
+** SessionManager
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Manages client session lifecycle: connect, heartbeat, disconnect, timeout.
+
+*** Value Properties
+
+| Property               | Type |
+|------------------------+------|
+| session_timeout_ms     |      |
+| heartbeat_interval_ms  |      |
+
+*** Part Properties
+
+*** Reference Properties
+
+| Property       | Type           |
+|----------------+----------------|
+| clientRegistry | ClientRegistry |
+
+** EncodingLayer
+:PROPERTIES:
+:PACKAGE: Blocks
+:END:
+
+Converts between protobuf Data_Value and HLA native encodings.
+Phase 1: modelled as a single block; decomposition deferred to Phase 2.
+
+*** Value Properties
+
+| Property           | Type       |
+|--------------------+------------|
+| default_endianness | Endianness |
+
+*** Part Properties
+
+*** Reference Properties
+
+| Property       | Type           |
+|----------------+----------------|
+| clientRegistry | ClientRegistry |
+
+* Interfaces
+
+Interface Blocks defining request/response pairs for each logical interface.
+These map directly to gRPC/protobuf service definitions.
+
+** UFServiceExchange
+:PROPERTIES:
+:PACKAGE: Interfaces
+:OPERATIONS: Publish_Object_Attributes, Subscribe_Object_Attributes, Update_Attribute_Values, Request_Object_Update, Publish_Interaction, Subscribe_Interaction, Send_Interaction
+:END:
+
+** UFClientExchange
+:PROPERTIES:
+:PACKAGE: Interfaces
+:OPERATIONS: Discover_Object_Instance, Reflect_Attribute_Values, Remove_Object_Instance, Provide_Attribute_Value_Update, Receive_Interaction
+:END:
+
+** SessionExchange
+:PROPERTIES:
+:PACKAGE: Interfaces
+:OPERATIONS: Connect_Client, Disconnect_Client, Heartbeat, Get_Client_State
+:END:
+
+** RTIExchange
+:PROPERTIES:
+:PACKAGE: Interfaces
+:OPERATIONS: Join_Federation, Resign_Federation, Register_Object_Instance, Delete_Object_Instance, Update_Object_Attributes, Send_RTI_Interaction, Subscribe_Object_Class, Unsubscribe_Object_Class, Subscribe_Interaction_Class, Unsubscribe_Interaction_Class
+:END:
+
+** EncodingExchange
+:PROPERTIES:
+:PACKAGE: Interfaces
+:OPERATIONS: Encode_Data_Value, Decode_Data_Value, Encode_Tag, Decode_Tag, Encode_Timestamp, Decode_Timestamp, Swap_Endianness
+:END:
+
+* Ports
+
+| Owner            | Port Name       | Interface Type    |
+|------------------+-----------------+-------------------|
+| CUIS_Architecture | ufServerPort   | UFServiceExchange |
+| CUIS_Architecture | ufCallbackPort | UFClientExchange  |
+| GRPCServices     | grpcServerPort  | UFServiceExchange |
+| GRPCServices     | sessionPort     | SessionExchange   |
+| RTIAdapter       | rtiPort         | RTIExchange       |
+| EncodingLayer    | encodingPort    | EncodingExchange  |
+
+* Relationships
+
+** Realizations
+
+| Block         | Interface          |
+|---------------+--------------------|
+| GRPCServices  | UFServiceExchange  |
+| GRPCServices  | SessionExchange    |
+| RTIAdapter    | RTIExchange        |
+| EncodingLayer | EncodingExchange   |
+
+** Dependencies
+
+| Client         | Supplier       | Name                     |
+|----------------+----------------+--------------------------|
+| GRPCServices   | RoutingEngine  | dispatches_pubsub_to     |
+| GRPCServices   | SessionManager | delegates_sessions_to     |
+| GRPCServices   | EncodingLayer  | marshals_values_via      |
+| RTIAdapter     | EncodingLayer  | converts_hla_types_via   |
+| RoutingEngine  | ClientRegistry | resolves_subscribers_via |
+| SessionManager | ClientRegistry | manages_clients_in       |
+
+* Activities
+
+High-level behaviour showing the main data flows through CUIS.
+Phase 1 captures the two primary flows; sub-component behaviour elaboration is Phase 2.
+
+** Object_PubSub_Flow
+:PROPERTIES:
+:PACKAGE: Activities
+:END:
+
+Shows the publish/subscribe and attribute reflection flow through CUIS.
+
+*** Partitions
+
+| Name           | Represents    |
+|----------------+---------------|
+| UF_SubApp      |               |
+| GRPCServices   | GRPCServices  |
+| RoutingEngine  | RoutingEngine |
+| EncodingLayer  | EncodingLayer |
+| RTIAdapter     | RTIAdapter    |
+| HLA_Federation |               |
+
+*** Nodes
+
+| ID               | Type    | Name                                | Partition      |
+|------------------+---------+-------------------------------------+----------------|
+| ps_init          | initial |                                     | UF_SubApp      |
+| ps_publish       | action  | Publish object attributes           | UF_SubApp      |
+| ps_recv_publish  | action  | Receive publish request             | GRPCServices   |
+| ps_register_pub  | action  | Register publication                | RoutingEngine  |
+| ps_rti_publish   | action  | Publish to RTI                      | RTIAdapter     |
+| ps_subscribe     | action  | Subscribe to object attributes      | UF_SubApp      |
+| ps_recv_subscribe | action | Receive subscribe request           | GRPCServices   |
+| ps_register_sub  | action  | Register subscription               | RoutingEngine  |
+| ps_rti_subscribe | action  | Subscribe at RTI                    | RTIAdapter     |
+| ps_update        | action  | Update attribute values             | UF_SubApp      |
+| ps_recv_update   | action  | Receive update request              | GRPCServices   |
+| ps_encode        | action  | Encode to HLA representation        | EncodingLayer  |
+| ps_rti_update    | action  | Forward update to RTI               | RTIAdapter     |
+| ps_rti_reflect   | action  | RTI delivers reflect callback       | RTIAdapter     |
+| ps_decode        | action  | Decode to Data_Value representation  | EncodingLayer  |
+| ps_route         | action  | Match reflection to subscribers     | RoutingEngine  |
+| ps_callback      | action  | Stream Reflect to subscriber        | GRPCServices   |
+| ps_client_recv   | action | Sub-App receives reflected values   | UF_SubApp      |
+| ps_final         | final   |                                     | UF_SubApp      |
+
+*** Flows
+
+| Source            | Target            | Guard |
+|-------------------+-------------------+-------|
+| ps_init           | ps_publish        |       |
+| ps_publish        | ps_recv_publish   |       |
+| ps_recv_publish   | ps_register_pub   |       |
+| ps_register_pub   | ps_rti_publish    |       |
+| ps_rti_publish    | ps_subscribe      |       |
+| ps_subscribe      | ps_recv_subscribe |       |
+| ps_recv_subscribe | ps_register_sub   |       |
+| ps_register_sub   | ps_rti_subscribe  |       |
+| ps_rti_subscribe  | ps_update         |       |
+| ps_update         | ps_recv_update    |       |
+| ps_recv_update    | ps_encode         |       |
+| ps_encode         | ps_rti_update     |       |
+| ps_rti_update     | ps_rti_reflect    |       |
+| ps_rti_reflect    | ps_decode         |       |
+| ps_decode         | ps_route          |       |
+| ps_route          | ps_callback       |       |
+| ps_callback       | ps_client_recv    |       |
+| ps_client_recv    | ps_final          |       |
+
+** Interaction_Send_Receive_Flow
+:PROPERTIES:
+:PACKAGE: Activities
+:END:
+
+Shows the interaction send and receive flow through CUIS.
+
+*** Partitions
+
+| Name           | Represents    |
+|----------------+---------------|
+| SenderUF       |               |
+| GRPCServices   | GRPCServices  |
+| RoutingEngine  | RoutingEngine |
+| EncodingLayer  | EncodingLayer |
+| RTIAdapter     | RTIAdapter    |
+| ReceiverUF     |               |
+
+*** Nodes
+
+| ID             | Type     | Name                              | Partition     |
+|----------------+----------+-----------------------------------+---------------|
+| i_init         | initial  |                                   | SenderUF      |
+| i_send         | action   | Send interaction                  | SenderUF      |
+| i_recv_send    | action   | Receive send request              | GRPCServices  |
+| i_validate     | action   | Validate interaction published    | RoutingEngine |
+| i_decision     | decision | valid?                            | RoutingEngine |
+| i_encode       | action   | Encode parameters to HLA          | EncodingLayer |
+| i_rti_send     | action   | Send interaction to RTI           | RTIAdapter    |
+| i_error        | action   | Return error to sender           | GRPCServices  |
+| i_rti_callback | action   | RTI delivers receive callback    | RTIAdapter    |
+| i_decode       | action   | Decode parameters to Data_Value   | EncodingLayer |
+| i_route        | action   | Resolve subscribed receivers      | RoutingEngine |
+| i_dispatch     | action   | Stream Receive_Interaction        | GRPCServices  |
+| i_client_recv  | action   | Receiver processes interaction    | ReceiverUF    |
+| i_merge        | merge    | interaction_merge                 | RoutingEngine |
+| i_final        | final    |                                   | RoutingEngine |
+
+*** Flows
+
+| Source          | Target          | Guard             |
+|-----------------+-----------------+-------------------|
+| i_init          | i_send          |                   |
+| i_send          | i_recv_send     |                   |
+| i_recv_send     | i_validate      |                   |
+| i_validate      | i_decision      |                   |
+| i_decision      | i_encode        | valid              |
+| i_encode        | i_rti_send      |                   |
+| i_decision      | i_error         | invalid           |
+| i_error         | i_merge         |                   |
+| i_rti_send      | i_rti_callback  |                   |
+| i_rti_callback  | i_decode        |                   |
+| i_decode        | i_route         |                   |
+| i_route         | i_dispatch      | subscribers exist |
+| i_route         | i_merge         | no subscribers    |
+| i_dispatch      | i_client_recv   |                   |
+| i_client_recv   | i_merge         |                   |
+| i_merge         | i_final         |                   |
