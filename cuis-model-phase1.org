@@ -25,6 +25,46 @@ internal sub-components) are modelled as DataTypes in the ExchangeItems package.
 External exchange items carry data across the UF↔CUIS and RTI↔CUIS boundaries.
 Internal exchange items flow between CUIS sub-components.
 
+Base types must precede the exchange items that reference them.
+
+** HLAhandle
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property     | Type |
+|--------------+------|
+| opaque_bytes |      |
+
+** Attribute_Values
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property | Type |
+|----------+------|
+| name     |      |
+| value    |      |
+
+** Parameter_Values
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property | Type |
+|----------+------|
+| name     |      |
+| value    |      |
+
+** Attributes
+:PROPERTIES:
+:PACKAGE: ExchangeItems
+:END:
+
+| Property          | Type      |
+|-------------------+-----------|
+| attribute_handles | HLAhandle |
+
 ** UF_PubSub_Request
 :PROPERTIES:
 :PACKAGE: ExchangeItems
@@ -136,44 +176,6 @@ Internal exchange items flow between CUIS sub-components.
 |------------+------------|
 | raw_bytes  |            |
 | endianness | Endianness |
-
-** HLAhandle
-:PROPERTIES:
-:PACKAGE: ExchangeItems
-:END:
-
-| Property     | Type |
-|--------------+------|
-| opaque_bytes |      |
-
-** Attribute_Values
-:PROPERTIES:
-:PACKAGE: ExchangeItems
-:END:
-
-| Property | Type |
-|----------+------|
-| name     |      |
-| value    |      |
-
-** Parameter_Values
-:PROPERTIES:
-:PACKAGE: ExchangeItems
-:END:
-
-| Property | Type |
-|----------+------|
-| name     |      |
-| value    |      |
-
-** Attributes
-:PROPERTIES:
-:PACKAGE: ExchangeItems
-:END:
-
-| Property          | Type      |
-|-------------------+-----------|
-| attribute_handles | HLAhandle |
 
 * Enumerations
 
