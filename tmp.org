@@ -1,24 +1,193 @@
-167k lines, 1674 files, 14 subprojects. Your key observation is correct — .project/.classpath files already exist in every subproject. That means JDTLS can skip Gradle import entirely and use the EclipseProjectImporter, which is nearly instant.
-The log confirms the bottleneck: Gradle import phase took from 06:07:19 to 06:12:30 — that's ~5 minutes out of the 5:11 total. After that, everything else (incremental validation) is fast.
-Here are the actionable improvements:
----
-1. (Biggest win) Disable Gradle importer — use Eclipse .project files instead
-Since .project/.classpath are already present and maintained, there's no need for Buildship/Gradle import. Add to your jdtls JVM args:
--Djava.import.gradle.enabled=false
--Djava.import.maven.enabled=false
-This forces JDTLS to use EclipseProjectImporter which just reads the XML files — seconds, not minutes. The 14 .classpath files already define all source paths, dependencies, and output dirs.
-Caveat: If you change dependencies in build.gradle.kts, you'll need to regenerate .classpath (via ./gradlew eclipse or similar) or temporarily re-enable Gradle import.
----
-2. Ensure .data directory is stable (prevent re-syncs)
-Your log shows fedproclient-java-java was modified since last time the workspace was opened, must be synchronized. This triggers a full Gradle re-sync every time any file changes. To prevent this:
-- Don't delete the .data directory between sessions
-- Use a fixed path (you already do)
-- If using lsp-mode in Emacs, ensure it reuses the same -data dir
----
-3. Remove -Dorg.gradle.daemon=false
-This flag runs Gradle in-process each time, which is slower for multi-project builds. For the Gradle import that does run, the daemon could cache project models. Since you're offline, there's no downside to letting the daemon run.
----
-4. Increase heap if possible
-You're at -Xmx4G. With 14 subprojects and 167k lines, 6G might help GC pauses but is unlikely to be a primary bottleneck. Only increase if you have RAM to spare.
----
-Summary: #1 alone should drop load time from ~5min to ~30-60s.
+#+TITLE: Offline JDTLS Setup for FedProClient
+#+AUTHOR: James Dyer
+#+DATE: 2026-05-15
+#+OPTIONS: toc:2 num:t
+
+* Overview
+
+This is some guidance on fine tuning a gradle build setup for java on an air-gapped we shall be using the Gradle 9.0.0 wrapper.
+
+For an LSP setup, JDTLS (Eclipse JDT Language Server) invokes Buildship, which calls the Gradle Tooling API to build an Eclipse project model. On an air-gapped system, three network operations in this chain will hang or time out:
+
+| Operation                 | Destination                                              | Default timeout |
+|---------------------------+----------------------------------------------------------+-----------------|
+| Maven source JAR download | repo.maven.apache.org                                    | indefinite      |
+| Gradle version list fetch | services.gradle.org/versions                             | ~7s             |
+| Wrapper SHA256 checksum   | services.gradle.org/distributions/.../wrapper.jar.sha256 | 30s (hardcoded) |
+
+This tutorial eliminates all three so JDTLS completes its import in a moderately reasonable time, although there is still room for improvement, this is good enough.
+
+Although there is generally a project fine tuning slant, especially to optimize LSP calls, there is a heavy Emacs slant to this tutorial, but this should also benefit other IDE's, for example VSCode.
+
+** Prerequisites
+
+- The project builds offline: =./gradlew build --offline= succeeds (all binary dependencies cached in ~/.gradle/).
+- Emacs 29+ with built-in Eglot.
+- JDTLS installed at =~/.emacs.d/bin/jdtls/=.
+- =sha256sum= (GNU coreutils).
+
+* Step 1 — Create root =build.gradle=
+
+Buildship reads the Gradle Eclipse model to construct classpath containers. If source attachment URIs are present in the model, Buildship attempts to download =*-sources.jar= from Maven Central for every dependency. This file prevents that.
+
+Create =java/build.gradle=:
+
+#+begin_src groovy
+allprojects {
+    apply plugin: 'eclipse'
+    eclipse {
+        classpath {
+            downloadSources = false
+            downloadJavadoc = false
+        }
+    }
+}
+#+end_src
+
+The =eclipse= plugin is applied to every subproject via =allprojects{}.  Buildship consumes the modified model and never constructs source URLs, so no network reachability is attempted.
+
+* Step 2 — Create Buildship preferences
+
+Create =java/.settings/org.eclipse.buildship.core.prefs=:
+
+#+begin_src sh
+mkdir -p java/.settings
+#+end_src
+
+With these contents:
+
+#+begin_src properties
+arguments=--init-script /home/jdyer/.emacs.d/bin/jdtls/configuration/org.eclipse.osgi/58/0/.cp/gradle/init/init.gradle
+auto.sync=false
+build.scans.enabled=false
+connection.gradle.distribution=GRADLE_DISTRIBUTION(WRAPPER)
+connection.project.dir=
+eclipse.preferences.version=1
+gradle.user.home=
+java.home=/usr/lib/jvm/java-21-openjdk
+jvm.arguments=
+offline.mode=false
+override.workspace.settings=true
+show.console.view=true
+show.executions.view=true
+#+end_src
+
+Notes:
+- The =init-script= path is the one JDTLS bundles. Adjust if your JDTLS install path differs.
+- =connection.gradle.distribution=WRAPPER= — uses the wrapper distribution, already cached from =./gradlew build=.
+- The actual offline flag is passed via LSP initialization options (Step 5), so =offline.mode=false= here is fine.
+
+* Step 3 — Pre-populate wrapper checksum cache
+
+JDTLS caches wrapper JAR SHA256 checksums at =~/.cache/tooling/gradle/checksums/=. If a file with the expected name exists there, it reads it directly instead of downloading from services.gradle.org.
+
+The cache filename follows the pattern:
+
+=gradle-{VERSION}-wrapper.jar.sha256=
+
+Find the Gradle version from the wrapper properties and compute the SHA256 of the wrapper JAR:
+
+#+begin_src sh
+cd /path/to/FedProClient-main/java
+
+# Check the Gradle version
+grep distributionUrl gradle/wrapper/gradle-wrapper.properties
+
+#   => distributionUrl=https\://services.gradle.org/distributions/gradle-9.0.0-bin.zip
+#   The version is "9.0.0", so the cache file will be "gradle-9.0.0-wrapper.jar.sha256"
+
+# Compute the wrapper JAR hash
+sha256sum gradle/wrapper/gradle-wrapper.jar
+
+#  => <hash> gradle/wrapper/gradle-wrapper.jar
+#+end_src
+
+Create the cache file:
+
+#+begin_src sh
+mkdir -p ~/.cache/tooling/gradle/checksums
+echo "<hash>" \
+  > ~/.cache/tooling/gradle/checksums/gradle-9.0.0-wrapper.jar.sha256
+#+end_src
+
+*Step 3b — Multiple Gradle versions*
+
+If you have multiple projects with different Gradle versions, repeat for each.
+#+end_src
+
+* Step 4 — Pre-populate versions cache
+
+JDTLS bundles a =versions.json= inside its core JAR and copies it to =~/.cache/tooling/gradle/versions.json= on first import. If it already exists, the network fetch to services.gradle.org is skipped.
+
+Extract it from the JDTLS plugin JAR:
+
+#+begin_src sh
+unzip -p ~/.emacs.d/bin/jdtls/plugins/org.eclipse.jdt.ls.core_*.jar \
+  gradle/checksums/versions.json > ~/.cache/tooling/gradle/versions.json
+#+end_src
+
+* Step 5 — Configure Emacs / Eglot
+
+Add to =~/.emacs.d/init.el=:
+
+#+begin_src emacs-lisp
+(setq-default eglot-workspace-configuration
+              '((java . (:import (:gradle (:offline (:enabled t)
+                                                    :checksums (:verify :json-false)
+                                                    :arguments "--offline")
+                                          :autobuild (:enabled :json-false))))))
+(setq jsonrpc-default-request-timeout 4)
+#+end_src
+
+What each setting does:
+
+- =gradle.offline.enabled= t — Tells Buildship to set the Gradle daemon's offline mode, preventing dependency resolution from reaching the network.
+- =gradle.checksums.verify= json-false — Tells Buildship to skip the wrapper SHA256 checksum download (belt-and-suspenders with Step 3).
+- =gradle.arguments= "--offline" — Passed through to Gradle itself.
+- =autobuild.enabled= json-false — Disables automatic compilation on save. Compile manually with =./gradlew build= when needed.
+- =jsonrpc-default-request-timeout= 4 — The default Eglot request timeout is 10s this is too long
+
+* Step 6 — Configure JDTLS launch flags
+
+The JDTLS launch command (as configured in your Eglot server programs) should include these JVM flags:
+
+: -Xms1G -Xmx4G -XX:+UseG1GC -XX:+UseStringDeduplication
+: -Djava.net.preferIPv4Stack=true
+: -Dgradle.offline=true
+: -Dorg.gradle.daemon=false
+: -Dorg.eclipse.jdt.ls.core.disableGradleWrapperValidation=true
+: -Dorg.eclipse.jdt.ls.import.maven.enabled=false
+: -Dorg.eclipse.jdt.ls.semanticHighlighting.enabled=false
+: -Dorg.eclipse.jdt.ls.referencesCodeLens.enabled=false
+: -Dorg.eclipse.jdt.ls.implementationsCodeLens.enabled=false
+
+If using Eglot's =:initializationOptions=, these flags are set in the server invocation script (e.g. =~/.emacs.d/bin/jdtls/bin/jdtls=).
+
+The important ones for offline operation:
+
+| Flag                                                            | Purpose                                   |
+|-----------------------------------------------------------------+-------------------------------------------|
+| =-Dgradle.offline=true=                                         | Gradle offline mode (belt-and-suspenders) |
+| =-Dorg.gradle.daemon=false=                                     | No persistent daemon on air-gapped system |
+| =-Dorg.eclipse.jdt.ls.core.disableGradleWrapperValidation=true= | Skip wrapper validation downloads         |
+| =-Dorg.eclipse.jdt.ls.import.maven.enabled=false=               | Skip Maven importer entirely              |
+
+* Step 8 — Network-level block (=/etc/hosts=, optional)
+
+Also, just in case, block the domains at the hosts level. This makes all connection attempts fail immediately (milliseconds) instead of timing out, the hosts file should include:
+
+#+begin_src sh
+127.0.0.1  services.gradle.org
+127.0.0.1  repo.maven.apache.org
+#+end_src
+
+* File reference
+
+| Path                                                                | Purpose                                 |
+|---------------------------------------------------------------------+-----------------------------------------|
+| =java/build.gradle=                                                 | Disable source JAR URIs in model        |
+| =java/.settings/org.eclipse.buildship.core.prefs=                   | Buildship preferences                   |
+| =~/.cache/tooling/gradle/checksums/gradle-9.0.0-wrapper.jar.sha256= | Bypass 30s checksum download            |
+| =~/.cache/tooling/gradle/versions.json=                             | Bypass 7s version list download         |
+| =~/.emacs.d/init.el= (=eglot-workspace-configuration=)              | LSP-level offline & checksum settings   |
+| =~/.cache/jdtls/jdtls-*/=                                           | JDTLS workspace (delete to force reset) |
