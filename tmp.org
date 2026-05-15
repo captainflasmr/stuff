@@ -1,23 +1,24 @@
-#+TITLE: 
-#+OPTIONS: toc:nil num:nil html-style:nil html-postamble:nil html-preamble:nil H:1
-#+SEQ_TODO: TODO WAITING | DONE
-
-#+HTML_HEAD: <style>
-#+HTML_HEAD:   /* Re-enable bullets and provide space for them */
-#+HTML_HEAD:   ul { list-style-type: disc; padding-left: 25px; }
-#+HTML_HEAD:   li { margin-bottom: 5px; font-family: sans-serif; display: list-item; }
-#+HTML_HEAD:   
-#+HTML_HEAD:   /* Ensure nested lists use different bullet shapes */
-#+HTML_HEAD:   ul ul { list-style-type: circle; }
-#+HTML_HEAD:   
-#+HTML_HEAD:   /* State Colors */
-#+HTML_HEAD:   .todo { color: #d93025; font-weight: bold; margin-right: 5px; }
-#+HTML_HEAD:   .WAITING { color: #f29900; font-weight: bold; margin-right: 5px; }
-#+HTML_HEAD:   .done { color: #1e8e3e; font-weight: bold; margin-right: 5px; }
-#+HTML_HEAD: </style>
-
-* Task List
-** TODO Write the introductory chapter
-*** WAITING Receive feedback from the design team
-** DONE Setup the repository
-** TODO Review the pull requests
+167k lines, 1674 files, 14 subprojects. Your key observation is correct — .project/.classpath files already exist in every subproject. That means JDTLS can skip Gradle import entirely and use the EclipseProjectImporter, which is nearly instant.
+The log confirms the bottleneck: Gradle import phase took from 06:07:19 to 06:12:30 — that's ~5 minutes out of the 5:11 total. After that, everything else (incremental validation) is fast.
+Here are the actionable improvements:
+---
+1. (Biggest win) Disable Gradle importer — use Eclipse .project files instead
+Since .project/.classpath are already present and maintained, there's no need for Buildship/Gradle import. Add to your jdtls JVM args:
+-Djava.import.gradle.enabled=false
+-Djava.import.maven.enabled=false
+This forces JDTLS to use EclipseProjectImporter which just reads the XML files — seconds, not minutes. The 14 .classpath files already define all source paths, dependencies, and output dirs.
+Caveat: If you change dependencies in build.gradle.kts, you'll need to regenerate .classpath (via ./gradlew eclipse or similar) or temporarily re-enable Gradle import.
+---
+2. Ensure .data directory is stable (prevent re-syncs)
+Your log shows fedproclient-java-java was modified since last time the workspace was opened, must be synchronized. This triggers a full Gradle re-sync every time any file changes. To prevent this:
+- Don't delete the .data directory between sessions
+- Use a fixed path (you already do)
+- If using lsp-mode in Emacs, ensure it reuses the same -data dir
+---
+3. Remove -Dorg.gradle.daemon=false
+This flag runs Gradle in-process each time, which is slower for multi-project builds. For the Gradle import that does run, the daemon could cache project models. Since you're offline, there's no downside to letting the daemon run.
+---
+4. Increase heap if possible
+You're at -Xmx4G. With 14 subprojects and 167k lines, 6G might help GC pauses but is unlikely to be a primary bottleneck. Only increase if you have RAM to spare.
+---
+Summary: #1 alone should drop load time from ~5min to ~30-60s.
