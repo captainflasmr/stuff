@@ -191,3 +191,182 @@ Also, just in case, block the domains at the hosts level. This makes all connect
 | =~/.cache/tooling/gradle/versions.json=                             | Bypass 7s version list download         |
 | =~/.emacs.d/init.el= (=eglot-workspace-configuration=)              | LSP-level offline & checksum settings   |
 | =~/.cache/jdtls/jdtls-*/=                                           | JDTLS workspace (delete to force reset) |
+
+================================================================================
+
+#+TITLE: Transferring Gradle Cache to an Air-Gapped VM
+#+SUBTITLE: Full ~/.gradle/ copy method (no scripts)
+
+* Problem
+
+FedProClient Java build (~400MB in =~/.gradle/=) must run on an
+air-gapped VM with no internet access. GitHub limits files to 50MB,
+so a single tarball cannot be pushed through a repo.
+
+* Solution
+
+Tar and split the full =~/.gradle/= cache on the internet-connected
+machine, transfer the parts via USB or SCP, reassemble on the target.
+
+* Prerequisites (source machine)
+
+- Java 21 JDK installed
+- =sha256sum= and =split= (GNU coreutils, present on any Linux)
+
+* Step 1 — Full build on the internet-connected machine
+
+Populate every corner of the cache:
+
+#+BEGIN_SRC sh
+cd FedProClient-main/java
+./gradlew build
+#+END_SRC
+
+This downloads:
+- Gradle 9.0.0 distribution binary (~143M)
+- All Maven/Ivy dependency JARs (~45M)
+- Gradle plugins and their dependencies
+- Generates transform caches, kotlin-dsl compiled scripts, etc.
+
+The result is ~401M in =~/.gradle/=:
+
+| Directory                           | Size  |
+|-------------------------------------+-------|
+| =~/.gradle/wrapper/dists/=          | 143M  |
+| =~/.gradle/caches/9.0.0/=           | 205M  |
+| =~/.gradle/caches/modules-2/=       |  45M  |
+| =~/.gradle/caches/jars-9/=          |   4M  |
+| =~/.gradle/daemon/=, =native/=      |   6M  |
+| Misc (journal, notifications, etc.) |  ~1M  |
+
+* Step 2 — Package the cache
+
+Create a compressed archive and split it into <50MB chunks:
+
+#+BEGIN_SRC sh
+# Create tarball of the full Gradle user home
+tar czf ~/gradle-cache.tar.gz -C ~ .gradle
+
+# Check the total size
+ls -lh ~/gradle-cache.tar.gz
+# => ~230M or so
+
+# Split into <50MB chunks for transport
+mkdir -p ~/gradle-offline-parts
+split -b 49M ~/gradle-cache.tar.gz ~/gradle-offline-parts/gradle-cache-part-
+
+# Generate checksums for safety
+cd ~/gradle-offline-parts
+sha256sum gradle-cache-part-* > SHA256SUMS
+
+# Verify checksums
+sha256sum -c SHA256SUMS
+
+# List the parts
+ls -lh ~/gradle-offline-parts/
+#+END_SRC
+
+Example output:
+
+: gradle-cache-part-aa  (49M)
+: gradle-cache-part-ab  (49M)
+: gradle-cache-part-ac  (49M)
+: gradle-cache-part-ad  (49M)
+: gradle-cache-part-ae  (38M)
+: SHA256SUMS
+
+All parts are well under GitHub's 50MB limit.
+
+* Step 3 — Transfer to the target VM
+
+** Option A — USB drive
+
+#+BEGIN_SRC sh
+cp -r ~/gradle-offline-parts /media/usb/
+#+END_SRC
+
+** Option B — SCP (if network is available between machines)
+
+#+BEGIN_SRC sh
+scp -r ~/gradle-offline-parts user@target-vm:~/
+#+END_SRC
+
+** Option C — Git repository
+
+#+BEGIN_SRC sh
+mkdir -p my-repo/gradle-cache
+cp -r ~/gradle-offline-parts/* my-repo/gradle-cache/
+cd my-repo
+git add gradle-cache/
+git commit -m "Add offline Gradle cache"
+git push
+# On target:
+git clone my-repo
+#+END_SRC
+
+* Step 4 — Reassemble and install on the target VM
+
+#+BEGIN_SRC sh
+cd ~/gradle-offline-parts
+
+# Verify integrity
+sha256sum -c SHA256SUMS
+
+# Concatenate parts and extract
+cat gradle-cache-part-* > /tmp/gradle-cache.tar.gz
+tar xzf /tmp/gradle-cache.tar.gz -C ~
+
+# Verify it landed correctly
+ls ~/.gradle/wrapper/dists/gradle-9.0.0-bin/
+# Should show the distribution directory
+
+# Clean up the temporary tarball
+rm /tmp/gradle-cache.tar.gz
+#+END_SRC
+
+* Step 5 — Build offline on the target VM
+
+#+BEGIN_SRC sh
+cd FedProClient-main/java
+./gradlew build --offline
+#+END_SRC
+
+The =--offline= flag ensures Gradle uses only cached dependencies and
+fails immediately if anything is missing, rather than hanging on
+network timeouts.
+
+* Verifying the cache
+
+To confirm the cache is complete before disconnecting:
+
+#+BEGIN_SRC sh
+# Dry-run the dependency resolution only (no compilation)
+cd FedProClient-main/java
+./gradlew dependencies --offline > /dev/null 2>&1 && echo "Cache OK" || echo "Missing dependencies"
+#+END_SRC
+
+* Tidying up the source machine
+
+After transferring, remove the temporary files:
+
+#+BEGIN_SRC sh
+rm ~/gradle-cache.tar.gz
+rm -rf ~/gradle-offline-parts
+#+END_SRC
+
+* Notes
+
+- The Gradle daemon hashes its registry to the machine it runs on
+  (because it embeds file paths and absolute symlinks). The daemon log
+  at =~/.gradle/daemon/9.0.0/= will generate harmless warnings on
+  first run. These can be ignored or removed:
+  #+BEGIN_SRC sh
+  rm -rf ~/.gradle/daemon
+  #+END_SRC
+
+- If you change Gradle version or add dependencies later, you must
+  re-run from Step 1 on the internet-connected machine.
+
+- First offline build will be slower than subsequent ones because
+  Gradle regenerates machine-local caches (compiled scripts,
+  transforms). This is normal.
