@@ -1,0 +1,313 @@
+#+TITLE: Offline IntelliJ IDEA Setup for FedProClient
+#+SUBTITLE: Installing IntelliJ on an air-gapped system for FedProClient development
+#+AUTHOR: James Dyer
+#+DATE: 2026-05-18
+
+* Overview
+
+This guide documents how to install and configure IntelliJ IDEA
+Community Edition on an offline (air-gapped) system for Java and C++
+development on the FedProClient project.
+
+IntelliJ is generally not as well-suited to offline use as VS Code or
+Emacs. By default it tries to download dependencies (Maven Central,
+Gradle plugins, plugin updates, etc.) on every project sync. This guide
+disables all of that.
+
+* Prerequisites
+
+- A host machine with internet access and IntelliJ IDEA already installed
+- A QEMU VM or target machine with JDK 21 installed
+- SSH access for file transfer
+
+* Part 1: Download on the Host
+
+** Step 1: Download the IntelliJ tarball
+
+Download the Linux x64 tarball from:
+
+https://www.jetbrains.com/idea/download/#section=linux
+
+Select the Community Edition (.tar.gz). The file will be named
+something like ~ideaIC-2026.1.2.tar.gz~ (~900 MB).
+
+** Step 2: Copy Gradle cache
+
+The Gradle cache is the key to offline builds. Without it, every build
+will fail trying to reach Maven Central.
+
+On the host, ensure the project builds successfully first:
+
+#+begin_src bash
+cd java
+./gradlew build --offline
+#+end_src
+
+If that succeeds, the ~.gradle~ cache is populated. Copy it:
+
+#+begin_src bash
+tar -czf gradle-cache.tar.gz -C ~ .gradle
+#+end_src
+
+This is typically ~280 MB for this project.
+
+** Step 3: Copy the custom keymap
+
+#+begin_src bash
+cp ~/.config/JetBrains/IdeaIC2026.1/keymaps/"FedPro Emacs (VSCode tweaks).xml" .
+#+end_src
+
+If you haven't created this keymap yet, you'll generate it on the
+target system by following Part 4.
+
+** Step 4: (Optional) Copy JDK
+
+If JDK 21 isn't available on the target system, download it:
+
+https://adoptium.net/temurin/releases/?version=21
+
+Choose "Linux x64" and the .tar.gz.
+
+* Part 2: Transfer to the Target
+
+** Step 1: Transfer the IntelliJ tarball
+
+#+begin_src bash
+scp -P 2222 ideaIC-2026.1.2.tar.gz jdyer@localhost:~/
+#+end_src
+
+** Step 2: Transfer Gradle cache and keymap
+
+#+begin_src bash
+scp -P 2222 gradle-cache.tar.gz jdyer@localhost:~/
+scp -P 2222 "FedPro Emacs (VSCode tweaks).xml" jdyer@localhost:~/
+#+end_src
+
+* Part 3: Install on the Target
+
+** Step 1: Extract IntelliJ
+
+#+begin_src bash
+ssh -p 2222 jdyer@localhost
+cd ~
+tar -xzf ideaIC-2026.1.2.tar.gz
+#+end_src
+
+This creates ~~/idea-IC-261.x.x/~.
+
+** Step 2: Add to PATH (optional)
+
+#+begin_src bash
+echo 'export PATH="$PATH:$HOME/idea-IC-261.x.x/bin"' >> ~/.bashrc
+source ~/.bashrc
+#+end_src
+
+** Step 3: Restore Gradle cache
+
+#+begin_src bash
+tar -xzf gradle-cache.tar.gz -C ~
+#+end_src
+
+This populates ~/.gradle/caches/ with all dependencies needed for an
+offline build.
+
+** Step 4: Install the custom keymap
+
+#+begin_src bash
+mkdir -p ~/.config/JetBrains/IdeaIC2026.1/keymaps
+cp "FedPro Emacs (VSCode tweaks).xml" ~/.config/JetBrains/IdeaIC2026.1/keymaps/
+#+end_src
+
+* Part 4: First Launch and Configuration
+
+** Step 1: Launch IntelliJ
+
+#+begin_src bash
+cd ~/idea-IC-261.x.x/bin
+./idea.sh
+#+end_src
+
+On first launch, IntelliJ may prompt:
+- "Import Settings": select ~Do not import~
+- "Privacy Policy": accept
+- "Data Sharing": disable everything
+- "Customize": skip themes/plugins
+
+** Step 2: Select the custom keymap
+
+Settings → Keymap → select ~FedPro Emacs (VSCode tweaks)~.
+
+** Step 3: Open the project
+
+File → Open → select ~FedProClient-main/java~ (the java subdirectory,
+not the repo root).
+
+When prompted ~Found 2 project configurations: Eclipse project, Gradle
+project~, choose ~Gradle project~.
+
+** Step 4: Enable offline mode immediately
+
+IntelliJ will start ~Importing Java Gradle Project...~ in the status
+bar. Wait for it to show the sync is stuck or slow, then:
+
+1. Open the Gradle tool window (View → Tool Windows → Gradle, or the
+   elephant icon on the right edge)
+2. Click the ~Refresh~ icon dropdown (circular arrows) and select
+   ~Offline mode~ (toggle it on)
+3. Also go to Settings → Build, Execution, Deployment → Build Tools →
+   Gradle and check ~Offline work~
+
+If the initial sync is already hung, use the terminal instead:
+
+#+begin_src bash
+cd ~/FedProClient-main/java
+./gradlew build --offline
+#+end_src
+
+This proves the build works offline. After it succeeds, go to the
+Gradle tool window and click the ~Refresh~ icon (now with offline mode
+on) to resync.
+
+** Step 5: Disable auto-sync and external connections
+
+Settings → Build, Execution, Deployment → Build Tools → Gradle:
+
+- Uncheck ~Use auto-import~
+- Check ~Offline work~
+
+Settings → Appearance & Behavior → System Settings → Updates:
+
+- Uncheck ~Automatically check updates~
+- Uncheck all update channels
+
+View → Tool Windows → Services (if open) → close it — it pings
+background services.
+
+* Part 5: Working Offline
+
+** Using the Gradle tool window
+
+With offline mode enabled, the Gradle tool window syncs instantly —
+no network calls. Expand ~fedproclient-java~ → Tasks → build → Run:
+
+| Task      | Action                          |
+|-----------+---------------------------------|
+| ~build~   | Compile and build all 14 subproj |
+| ~test~    | Run unit tests                  |
+| ~runSample~ | Run Chat federate sample      |
+
+** Using the terminal
+
+#+begin_src bash
+cd ~/FedProClient-main/java
+./gradlew build --offline
+#+end_src
+
+** Jump-to-definition and xref
+
+IntelliJ resolves symbols from the Gradle cache and local source, so
+jump-to-definition (~C-click~ or ~Alt+.~) works fully offline once the
+project is imported. No network needed.
+
+** Debugging
+
+- F5: Choose and run a debug configuration
+- F9: Toggle breakpoint
+- F10: Step Over
+- F11: Step Into
+- Shift+F5: Stop
+
+** Creating run configurations for the samples
+
+If the sample federates don't run out of the box:
+
+Run → Edit Configurations → + → Application:
+
+| Field        | HLA4 Value                                 | HLA Evolved Value            |
+|--------------+---------------------------------------------+------------------------------|
+| Main class   | ~se.pitch.oss.fedpro.client.sample.HlaChat~  | ~se.pitch.oss.fedpro.client_evolved.sample.HlaChat~ |
+| Working dir  | ~/home/jdyer/FedProClient-main/java~         | same                         |
+| Use classpath of module | ~sample~                                | ~sample_evolved~             |
+
+* Part 6: What Doesn't Work Offline
+
+| Feature             | Why                                   | Workaround                     |
+|---------------------+---------------------------------------+--------------------------------|
+| Plugin marketplace  | Needs internet to list/install plugin | Pre-install on host, copy ~/.local/share/JetBrains/ |
+| IDE updates         | Checks JetBrains servers             | Turn off in settings            |
+| Maven/Gradle remote | External dependency downloads         | Pre-cache ~/.gradle~ (Part 1)   |
+| Type hierarchy      | Works offline                        | N/A                            |
+| Find usages         | Works offline                        | N/A                            |
+| Refactoring         | Works offline                        | N/A                            |
+
+* File Sizes
+
+| Component               | Size      |
+|-------------------------+-----------|
+| IntelliJ tarball        | ~900 MB   |
+| IntelliJ extracted      | ~1.8 GB   |
+| Gradle cache            | ~280 MB   |
+| Custom keymap XML       | ~3 KB     |
+
+* Troubleshooting
+
+** Gradle sync hangs on ~Importing Java Gradle Project...~
+
+1. Cancel the sync (red stop button in status bar)
+2. Toggle ~Offline mode~ in the Gradle tool window
+3. Click the Refresh icon to re-sync
+
+If still hung:
+
+1. File → Invalidate Caches → Invalidate and Restart
+2. After restart, immediately enable offline mode before it syncs
+3. Open the Gradle tool window and click Refresh
+
+** Build fails with ~Could not resolve all artifacts...~
+
+The Gradle cache is missing dependencies. On the host, run:
+
+#+begin_src bash
+cd java && ./gradlew build --offline 2>&1 | grep "Could not resolve"
+#+end_src
+
+This shows which dependencies are missing. Then build normally with
+internet on the host, re-copy the ~/.gradle~ cache, and transfer again.
+
+** Keymap not appearing in Settings → Keymap
+
+Ensure the ~.xml~ file is in the correct directory:
+
+#+begin_src bash
+ls ~/.config/JetBrains/IdeaIC2026.1/keymaps/
+#+end_src
+
+The version number in the path (~IdeaIC2026.1~) must match your
+IntelliJ version. For Ultimate, it would be ~IntelliJIdea2026.1~
+instead.
+
+If the file is in the right place, restart IntelliJ — it reads keymaps
+at startup.
+
+** ~Ctrl+V~ does not scroll / ~Ctrl+V~ pastes instead
+
+The Emacs keymap normally remaps ~Ctrl+V~ from Paste to PageDown, and
+moves Paste to ~Ctrl+Y~ (Emacs yank). If using the custom keymap
+supplied here, this is already configured. If not, manually verify:
+
+Settings → Keymap → search for ~$Paste~ — it should show only
+~Ctrl+Y~ and ~Shift+Insert~, not ~Ctrl+V~.
+
+Search for ~EditorPageDown~ — it should show ~Ctrl+V~.
+
+** IntelliJ is very large
+
+~2 GB total is normal for a full IDE. If space is tight, consider
+using VS Code or Emacs with jdtls instead (see ~vscode-setup/~ and
+~emacs-setup/~).
+
+* See Also
+
+- ~vscode-setup/README.org~ — Offline VS Code setup (lighter, ~350 MB)
+- ~emacs-setup/~ — Offline Emacs + lsp-mode + jdtls setup (lightest, ~100 MB)
+- ~AGENTS.md~ — Build commands for Gradle, C++ presets
