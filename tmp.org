@@ -1,372 +1,47 @@
-#+TITLE: Offline JDTLS Setup for FedProClient
-#+AUTHOR: James Dyer
-#+DATE: 2026-05-15
-#+OPTIONS: toc:2 num:t
+5 minutes is painful but common for large Java projects. Here are the most effective ways to reduce it:
 
-* Overview
+## Give JDT LS more heap
 
-This is some guidance on fine tuning a gradle build setup for java on an air-gapped we shall be using the Gradle 9.0.0 wrapper.
+The biggest win is usually just more memory. In your `jdtls` launch args:
 
-For an LSP setup, JDTLS (Eclipse JDT Language Server) invokes Buildship, which calls the Gradle Tooling API to build an Eclipse project model. On an air-gapped system, three network operations in this chain will hang or time out:
+```
+-vmargs -Xms512m -Xmx4g -XX:+UseG1GC
+```
 
-| Operation                 | Destination                                              | Default timeout |
-|---------------------------+----------------------------------------------------------+-----------------|
-| Maven source JAR download | repo.maven.apache.org                                    | indefinite      |
-| Gradle version list fetch | services.gradle.org/versions                             | ~7s             |
-| Wrapper SHA256 checksum   | services.gradle.org/distributions/.../wrapper.jar.sha256 | 30s (hardcoded) |
+More heap = fewer GC pauses during indexing. `-XX:+UseG1GC` handles large heaps better than the default collector.
 
-This tutorial eliminates all three so JDTLS completes its import in a moderately reasonable time, although there is still room for improvement, this is good enough.
+## Use a faster JDK
 
-Although there is generally a project fine tuning slant, especially to optimize LSP calls, there is a heavy Emacs slant to this tutorial, but this should also benefit other IDE's, for example VSCode.
+JDT LS runs on JVM — use JDK 17+ to launch the server itself (separate from your project's JDK). Newer JVMs have significantly better startup and GC characteristics.
 
-** Prerequisites
+## Exclude directories from watching
 
-- The project builds offline: =./gradlew build --offline= succeeds (all binary dependencies cached in ~/.gradle/).
-- Emacs 29+ with built-in Eglot.
-- JDTLS installed at =~/.emacs.d/bin/jdtls/=.
-- =sha256sum= (GNU coreutils).
+If you have large generated directories, build outputs, or node_modules nearby:
 
-* Step 1 — Create root =build.gradle=
+```elisp
+(setq eglot-ignored-server-capabilities '())
 
-Buildship reads the Gradle Eclipse model to construct classpath containers. If source attachment URIs are present in the model, Buildship attempts to download =*-sources.jar= from Maven Central for every dependency. This file prevents that.
+;; Or configure file watching exclusions via workspace config
+```
 
-Create =java/build.gradle=:
+In `.settings/org.eclipse.core.resources.prefs` or via LSP workspace settings, exclude `target/`, `build/`, `.gradle/` from indexing.
 
-#+begin_src groovy
-allprojects {
-    apply plugin: 'eclipse'
-    eclipse {
-        classpath {
-            downloadSources = false
-            downloadJavadoc = false
-        }
-    }
-}
-#+end_src
+## Persist the workspace cache
 
-The =eclipse= plugin is applied to every subproject via =allprojects{}.  Buildship consumes the modified model and never constructs source URLs, so no network reachability is attempted.
+Make sure JDT LS is reusing its `-data` workspace directory between sessions rather than a temp dir. If it's a fresh dir each launch, it re-indexes every time. Point it at a stable path:
 
-* Step 2 — Create Buildship preferences
+```
+-data ~/.cache/jdtls-workspace/my-project
+```
 
-Create =java/.settings/org.eclipse.buildship.core.prefs=:
+## Limit project scope
 
-#+begin_src sh
-mkdir -p java/.settings
-#+end_src
+If it's a multi-module Maven/Gradle project, JDT LS indexes everything. You can open just the submodule you're working on rather than the root, which dramatically cuts indexing scope.
 
-With these contents:
+## Check if Gradle/Maven itself is slow
 
-#+begin_src properties
-arguments=--init-script /home/jdyer/.emacs.d/bin/jdtls/configuration/org.eclipse.osgi/58/0/.cp/gradle/init/init.gradle
-auto.sync=false
-build.scans.enabled=false
-connection.gradle.distribution=GRADLE_DISTRIBUTION(WRAPPER)
-connection.project.dir=
-eclipse.preferences.version=1
-gradle.user.home=
-java.home=/usr/lib/jvm/java-21-openjdk
-jvm.arguments=
-offline.mode=false
-override.workspace.settings=true
-show.console.view=true
-show.executions.view=true
-#+end_src
+Sometimes the delay isn't JDT LS indexing — it's JDT LS waiting for Gradle/Maven to resolve dependencies. Running `gradle dependencies` or `mvn dependency:resolve` first to warm the local repo cache helps isolate whether that's the bottleneck.
 
-Notes:
-- The =init-script= path is the one JDTLS bundles. Adjust if your JDTLS install path differs.
-- =connection.gradle.distribution=WRAPPER= — uses the wrapper distribution, already cached from =./gradlew build=.
-- The actual offline flag is passed via LSP initialization options (Step 5), so =offline.mode=false= here is fine.
+---
 
-* Step 3 — Pre-populate wrapper checksum cache
-
-JDTLS caches wrapper JAR SHA256 checksums at =~/.cache/tooling/gradle/checksums/=. If a file with the expected name exists there, it reads it directly instead of downloading from services.gradle.org.
-
-The cache filename follows the pattern:
-
-=gradle-{VERSION}-wrapper.jar.sha256=
-
-Find the Gradle version from the wrapper properties and compute the SHA256 of the wrapper JAR:
-
-#+begin_src sh
-cd /path/to/FedProClient-main/java
-
-# Check the Gradle version
-grep distributionUrl gradle/wrapper/gradle-wrapper.properties
-
-#   => distributionUrl=https\://services.gradle.org/distributions/gradle-9.0.0-bin.zip
-#   The version is "9.0.0", so the cache file will be "gradle-9.0.0-wrapper.jar.sha256"
-
-# Compute the wrapper JAR hash
-sha256sum gradle/wrapper/gradle-wrapper.jar
-
-#  => <hash> gradle/wrapper/gradle-wrapper.jar
-#+end_src
-
-Create the cache file:
-
-#+begin_src sh
-mkdir -p ~/.cache/tooling/gradle/checksums
-echo "<hash>" \
-  > ~/.cache/tooling/gradle/checksums/gradle-9.0.0-wrapper.jar.sha256
-#+end_src
-
-*Step 3b — Multiple Gradle versions*
-
-If you have multiple projects with different Gradle versions, repeat for each.
-#+end_src
-
-* Step 4 — Pre-populate versions cache
-
-JDTLS bundles a =versions.json= inside its core JAR and copies it to =~/.cache/tooling/gradle/versions.json= on first import. If it already exists, the network fetch to services.gradle.org is skipped.
-
-Extract it from the JDTLS plugin JAR:
-
-#+begin_src sh
-unzip -p ~/.emacs.d/bin/jdtls/plugins/org.eclipse.jdt.ls.core_*.jar \
-  gradle/checksums/versions.json > ~/.cache/tooling/gradle/versions.json
-#+end_src
-
-* Step 5 — Configure Emacs / Eglot
-
-Add to =~/.emacs.d/init.el=:
-
-#+begin_src emacs-lisp
-(setq-default eglot-workspace-configuration
-              '((java . (:import (:gradle (:offline (:enabled t)
-                                                    :checksums (:verify :json-false)
-                                                    :arguments "--offline")
-                                          :autobuild (:enabled :json-false))))))
-(setq jsonrpc-default-request-timeout 4)
-#+end_src
-
-What each setting does:
-
-- =gradle.offline.enabled= t — Tells Buildship to set the Gradle daemon's offline mode, preventing dependency resolution from reaching the network.
-- =gradle.checksums.verify= json-false — Tells Buildship to skip the wrapper SHA256 checksum download (belt-and-suspenders with Step 3).
-- =gradle.arguments= "--offline" — Passed through to Gradle itself.
-- =autobuild.enabled= json-false — Disables automatic compilation on save. Compile manually with =./gradlew build= when needed.
-- =jsonrpc-default-request-timeout= 4 — The default Eglot request timeout is 10s this is too long
-
-* Step 6 — Configure JDTLS launch flags
-
-The JDTLS launch command (as configured in your Eglot server programs) should include these JVM flags:
-
-: -Xms1G -Xmx4G -XX:+UseG1GC -XX:+UseStringDeduplication
-: -Djava.net.preferIPv4Stack=true
-: -Dgradle.offline=true
-: -Dorg.gradle.daemon=false
-: -Dorg.eclipse.jdt.ls.core.disableGradleWrapperValidation=true
-: -Dorg.eclipse.jdt.ls.import.maven.enabled=false
-: -Dorg.eclipse.jdt.ls.semanticHighlighting.enabled=false
-: -Dorg.eclipse.jdt.ls.referencesCodeLens.enabled=false
-: -Dorg.eclipse.jdt.ls.implementationsCodeLens.enabled=false
-
-If using Eglot's =:initializationOptions=, these flags are set in the server invocation script (e.g. =~/.emacs.d/bin/jdtls/bin/jdtls=).
-
-The important ones for offline operation:
-
-| Flag                                                            | Purpose                                   |
-|-----------------------------------------------------------------+-------------------------------------------|
-| =-Dgradle.offline=true=                                         | Gradle offline mode (belt-and-suspenders) |
-| =-Dorg.gradle.daemon=false=                                     | No persistent daemon on air-gapped system |
-| =-Dorg.eclipse.jdt.ls.core.disableGradleWrapperValidation=true= | Skip wrapper validation downloads         |
-| =-Dorg.eclipse.jdt.ls.import.maven.enabled=false=               | Skip Maven importer entirely              |
-
-* Step 8 — Network-level block (=/etc/hosts=, optional)
-
-Also, just in case, block the domains at the hosts level. This makes all connection attempts fail immediately (milliseconds) instead of timing out, the hosts file should include:
-
-#+begin_src sh
-127.0.0.1  services.gradle.org
-127.0.0.1  repo.maven.apache.org
-#+end_src
-
-* File reference
-
-| Path                                                                | Purpose                                 |
-|---------------------------------------------------------------------+-----------------------------------------|
-| =java/build.gradle=                                                 | Disable source JAR URIs in model        |
-| =java/.settings/org.eclipse.buildship.core.prefs=                   | Buildship preferences                   |
-| =~/.cache/tooling/gradle/checksums/gradle-9.0.0-wrapper.jar.sha256= | Bypass 30s checksum download            |
-| =~/.cache/tooling/gradle/versions.json=                             | Bypass 7s version list download         |
-| =~/.emacs.d/init.el= (=eglot-workspace-configuration=)              | LSP-level offline & checksum settings   |
-| =~/.cache/jdtls/jdtls-*/=                                           | JDTLS workspace (delete to force reset) |
-
-================================================================================
-
-#+TITLE: Transferring Gradle Cache to an Air-Gapped VM
-#+SUBTITLE: Full ~/.gradle/ copy method (no scripts)
-
-* Problem
-
-FedProClient Java build (~400MB in =~/.gradle/=) must run on an
-air-gapped VM with no internet access. GitHub limits files to 50MB,
-so a single tarball cannot be pushed through a repo.
-
-* Solution
-
-Tar and split the full =~/.gradle/= cache on the internet-connected
-machine, transfer the parts via USB or SCP, reassemble on the target.
-
-* Prerequisites (source machine)
-
-- Java 21 JDK installed
-- =sha256sum= and =split= (GNU coreutils, present on any Linux)
-
-* Step 1 — Full build on the internet-connected machine
-
-Populate every corner of the cache:
-
-#+BEGIN_SRC sh
-cd FedProClient-main/java
-./gradlew build
-#+END_SRC
-
-This downloads:
-- Gradle 9.0.0 distribution binary (~143M)
-- All Maven/Ivy dependency JARs (~45M)
-- Gradle plugins and their dependencies
-- Generates transform caches, kotlin-dsl compiled scripts, etc.
-
-The result is ~401M in =~/.gradle/=:
-
-| Directory                           | Size  |
-|-------------------------------------+-------|
-| =~/.gradle/wrapper/dists/=          | 143M  |
-| =~/.gradle/caches/9.0.0/=           | 205M  |
-| =~/.gradle/caches/modules-2/=       |  45M  |
-| =~/.gradle/caches/jars-9/=          |   4M  |
-| =~/.gradle/daemon/=, =native/=      |   6M  |
-| Misc (journal, notifications, etc.) |  ~1M  |
-
-* Step 2 — Package the cache
-
-Create a compressed archive and split it into <50MB chunks:
-
-#+BEGIN_SRC sh
-# Create tarball of the full Gradle user home
-tar czf ~/gradle-cache.tar.gz -C ~ .gradle
-
-# Check the total size
-ls -lh ~/gradle-cache.tar.gz
-# => ~230M or so
-
-# Split into <50MB chunks for transport
-mkdir -p ~/gradle-offline-parts
-split -b 49M ~/gradle-cache.tar.gz ~/gradle-offline-parts/gradle-cache-part-
-
-# Generate checksums for safety
-cd ~/gradle-offline-parts
-sha256sum gradle-cache-part-* > SHA256SUMS
-
-# Verify checksums
-sha256sum -c SHA256SUMS
-
-# List the parts
-ls -lh ~/gradle-offline-parts/
-#+END_SRC
-
-Example output:
-
-: gradle-cache-part-aa  (49M)
-: gradle-cache-part-ab  (49M)
-: gradle-cache-part-ac  (49M)
-: gradle-cache-part-ad  (49M)
-: gradle-cache-part-ae  (38M)
-: SHA256SUMS
-
-All parts are well under GitHub's 50MB limit.
-
-* Step 3 — Transfer to the target VM
-
-** Option A — USB drive
-
-#+BEGIN_SRC sh
-cp -r ~/gradle-offline-parts /media/usb/
-#+END_SRC
-
-** Option B — SCP (if network is available between machines)
-
-#+BEGIN_SRC sh
-scp -r ~/gradle-offline-parts user@target-vm:~/
-#+END_SRC
-
-** Option C — Git repository
-
-#+BEGIN_SRC sh
-mkdir -p my-repo/gradle-cache
-cp -r ~/gradle-offline-parts/* my-repo/gradle-cache/
-cd my-repo
-git add gradle-cache/
-git commit -m "Add offline Gradle cache"
-git push
-# On target:
-git clone my-repo
-#+END_SRC
-
-* Step 4 — Reassemble and install on the target VM
-
-#+BEGIN_SRC sh
-cd ~/gradle-offline-parts
-
-# Verify integrity
-sha256sum -c SHA256SUMS
-
-# Concatenate parts and extract
-cat gradle-cache-part-* > /tmp/gradle-cache.tar.gz
-tar xzf /tmp/gradle-cache.tar.gz -C ~
-
-# Verify it landed correctly
-ls ~/.gradle/wrapper/dists/gradle-9.0.0-bin/
-# Should show the distribution directory
-
-# Clean up the temporary tarball
-rm /tmp/gradle-cache.tar.gz
-#+END_SRC
-
-* Step 5 — Build offline on the target VM
-
-#+BEGIN_SRC sh
-cd FedProClient-main/java
-./gradlew build --offline
-#+END_SRC
-
-The =--offline= flag ensures Gradle uses only cached dependencies and
-fails immediately if anything is missing, rather than hanging on
-network timeouts.
-
-* Verifying the cache
-
-To confirm the cache is complete before disconnecting:
-
-#+BEGIN_SRC sh
-# Dry-run the dependency resolution only (no compilation)
-cd FedProClient-main/java
-./gradlew dependencies --offline > /dev/null 2>&1 && echo "Cache OK" || echo "Missing dependencies"
-#+END_SRC
-
-* Tidying up the source machine
-
-After transferring, remove the temporary files:
-
-#+BEGIN_SRC sh
-rm ~/gradle-cache.tar.gz
-rm -rf ~/gradle-offline-parts
-#+END_SRC
-
-* Notes
-
-- The Gradle daemon hashes its registry to the machine it runs on
-  (because it embeds file paths and absolute symlinks). The daemon log
-  at =~/.gradle/daemon/9.0.0/= will generate harmless warnings on
-  first run. These can be ignored or removed:
-  #+BEGIN_SRC sh
-  rm -rf ~/.gradle/daemon
-  #+END_SRC
-
-- If you change Gradle version or add dependencies later, you must
-  re-run from Step 1 on the internet-connected machine.
-
-- First offline build will be slower than subsequent ones because
-  Gradle regenerates machine-local caches (compiled scripts,
-  transforms). This is normal.
+The **stable `-data` directory + more heap** combination alone usually cuts startup from 5 minutes to under 30 seconds on subsequent launches, since the index is already built and just needs to be validated.
