@@ -6,16 +6,42 @@
   <action id="ActivateBookmarksToolWindow">
     <keyboard-shortcut first-keystroke="alt o" />
   </action>
+  <action id="ActivateCommitToolWindow">
+    <keyboard-shortcut first-keystroke="alt 0" />
+  </action>
+  <action id="ActivateDebugToolWindow">
+    <keyboard-shortcut first-keystroke="alt 5" />
+  </action>
+  <action id="ActivateFavoritesToolWindow">
+    <keyboard-shortcut first-keystroke="alt 2" />
+  </action>
+  <action id="ActivateFindToolWindow">
+    <keyboard-shortcut first-keystroke="alt 3" />
+  </action>
   <action id="ActivateProblemsViewToolWindow">
     <keyboard-shortcut first-keystroke="shift alt m" />
   </action>
   <action id="ActivateProjectToolWindow">
+    <keyboard-shortcut first-keystroke="ctrl 0" />
+    <keyboard-shortcut first-keystroke="alt 1" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="d" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="m" />
+  </action>
+  <action id="ActivateRunToolWindow">
+    <keyboard-shortcut first-keystroke="alt 4" />
+  </action>
+  <action id="ActivateServicesToolWindow">
+    <keyboard-shortcut first-keystroke="alt 8" />
+  </action>
+  <action id="ActivateStructureToolWindow">
+    <keyboard-shortcut first-keystroke="alt 7" />
   </action>
   <action id="ActivateTerminalToolWindow">
     <keyboard-shortcut first-keystroke="alt open_bracket" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="j" />
+  </action>
+  <action id="ActivateVersionControlToolWindow">
+    <keyboard-shortcut first-keystroke="alt 9" />
   </action>
   <action id="Back">
     <keyboard-shortcut first-keystroke="alt comma" />
@@ -25,7 +51,6 @@
     <keyboard-shortcut first-keystroke="f5" />
   </action>
   <action id="CloseContent">
-    <keyboard-shortcut first-keystroke="alt 0" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="0" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="k" />
   </action>
@@ -39,23 +64,29 @@
   <action id="EditorChooseLookupItemReplace">
     <keyboard-shortcut first-keystroke="ctrl j" />
   </action>
+  <action id="EditorDown">
+    <keyboard-shortcut first-keystroke="ctrl n" />
+    <keyboard-shortcut first-keystroke="alt j" />
+  </action>
   <action id="EditorLineStart">
     <keyboard-shortcut first-keystroke="home" />
     <keyboard-shortcut first-keystroke="ctrl a" />
   </action>
   <action id="EditorPageDown">
-    <keyboard-shortcut first-keystroke="alt j" />
     <keyboard-shortcut first-keystroke="ctrl v" />
     <keyboard-shortcut first-keystroke="page_down" />
   </action>
   <action id="EditorPageUp">
-    <keyboard-shortcut first-keystroke="alt k" />
     <keyboard-shortcut first-keystroke="alt v" />
     <keyboard-shortcut first-keystroke="page_up" />
     <keyboard-shortcut first-keystroke="ctrl z" />
   </action>
   <action id="EditorToggleUseSoftWraps">
     <keyboard-shortcut first-keystroke="alt z" />
+  </action>
+  <action id="EditorUp">
+    <keyboard-shortcut first-keystroke="ctrl p" />
+    <keyboard-shortcut first-keystroke="alt k" />
   </action>
   <action id="FindInPath">
     <keyboard-shortcut first-keystroke="ctrl c" second-keystroke="g" />
@@ -103,12 +134,10 @@
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="l" />
   </action>
   <action id="SplitHorizontally">
-    <keyboard-shortcut first-keystroke="alt 2" />
     <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="s" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="2" />
   </action>
   <action id="SplitVertically">
-    <keyboard-shortcut first-keystroke="alt 3" />
     <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="v" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="3" />
   </action>
@@ -129,7 +158,6 @@
     <keyboard-shortcut first-keystroke="f9" />
   </action>
   <action id="UnsplitAll">
-    <keyboard-shortcut first-keystroke="alt 1" />
     <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="o" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="1" />
   </action>
