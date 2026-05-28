@@ -1,47 +1,54 @@
-5 minutes is painful but common for large Java projects. Here are the most effective ways to reduce it:
 
-## Give JDT LS more heap
+● Two answers here, and the second one matters more.
 
-The biggest win is usually just more memory. In your `jdtls` launch args:
+  1. Your cache already has JUnit — nothing to transfer
 
-```
--vmargs -Xms512m -Xmx4g -XX:+UseG1GC
-```
+  Both versions are fully cached and offline-resolvable (jar + pom + descriptor.bin), including JUnit 4's required transitive dep:
 
-More heap = fewer GC pauses during indexing. `-XX:+UseG1GC` handles large heaps better than the default collector.
+  ┌────────────────────────────────┬───────────────────────────┐
+  │            Artifact            │          Cached?          │
+  ├────────────────────────────────┼───────────────────────────┤
+  │ junit:junit:4.12               │ ✅ jar + pom + descriptor │
+  ├────────────────────────────────┼───────────────────────────┤
+  │ junit:junit:4.13.2             │ ✅ jar + pom + descriptor │
+  ├────────────────────────────────┼───────────────────────────┤
+  │ org.hamcrest:hamcrest-core:1.3 │ ✅ (pulled in by junit 4) │
+  └────────────────────────────────┴───────────────────────────┘
 
-## Use a faster JDK
+  So the other assistant's worry ("run once without --offline to populate the cache") doesn't apply — 4.13.2 will resolve offline. That said, I'd use testImplementation(libs.junit) (=
+   4.12, the catalog pin already used by test/, cuis-test/, subapp-example/) rather than hardcoding junit:junit:4.13.2. Both work offline; the catalog form is consistent with the rest
+   of the project.
 
-JDT LS runs on JVM — use JDK 17+ to launch the server itself (separate from your project's JDK). Newer JVMs have significantly better startup and GC characteristics.
+  2. The dependency won't actually fix your error
 
-## Exclude directories from watching
+  Look at which task failed: :cuis-server:compileJava — that's the main compile, not compileTestJava. The base cuis-server/build.gradle.kts does this:
 
-If you have large generated directories, build outputs, or node_modules nearby:
+  sourceSets {
+      main { java { setSrcDirs(listOf("src")) } }   // main root = "src"
+  }
 
-```elisp
-(setq eglot-ignored-server-capabilities '())
+  Your test lives at src/test/java/.../CuisServerIntegrationTest.java — which is underneath src, so it gets swept into the main source set and compiled by compileJava, where JUnit is
+  (correctly) absent. A testImplementation dependency only adds JUnit to the test classpath, so the main compile will keep failing on org.junit no matter which JUnit version you add.
 
-;; Or configure file watching exclusions via workspace config
-```
+  The real fix is to keep test sources out of main:
 
-In `.settings/org.eclipse.core.resources.prefs` or via LSP workspace settings, exclude `target/`, `build/`, `.gradle/` from indexing.
+  dependencies {
+      // ...existing...
+      testImplementation(libs.junit)
+  }
 
-## Persist the workspace cache
+  sourceSets {
+      main {
+          java {
+              setSrcDirs(listOf("src"))
+              exclude("test/**")          // don't compile src/test as main
+          }
+      }
+      test {
+          java {
+              setSrcDirs(listOf("src/test/java"))
+          }
+      }
+  }
 
-Make sure JDT LS is reusing its `-data` workspace directory between sessions rather than a temp dir. If it's a fresh dir each launch, it re-indexes every time. Point it at a stable path:
-
-```
--data ~/.cache/jdtls-workspace/my-project
-```
-
-## Limit project scope
-
-If it's a multi-module Maven/Gradle project, JDT LS indexes everything. You can open just the submodule you're working on rather than the root, which dramatically cuts indexing scope.
-
-## Check if Gradle/Maven itself is slow
-
-Sometimes the delay isn't JDT LS indexing — it's JDT LS waiting for Gradle/Maven to resolve dependencies. Running `gradle dependencies` or `mvn dependency:resolve` first to warm the local repo cache helps isolate whether that's the bottleneck.
-
----
-
-The **stable `-data` directory + more heap** combination alone usually cuts startup from 5 minutes to under 30 seconds on subsequent launches, since the index is already built and just needs to be validated.
+  After that, ./gradlew --offline :cuis-server:test should compile and run against the already-cached JUnit 4.12 + hamcrest — no online build, no cache transfer needed.
