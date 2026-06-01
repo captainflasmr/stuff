@@ -1,0 +1,159 @@
+#+TITLE: MockRTIambassador — How the CUIS Test RTI Works
+#+AUTHOR: FedProClient / CUIS
+#+OPTIONS: toc:2 num:t
+
+* Overview
+
+~MockRTIambassador~ lives at
+[[file:src/se/pitch/oss/fedpro/cuis/test/mock/MockRTIambassador.java]] and
+extends ~NullRTIambassador~ (which throws/no-ops every method of the huge
+~RTIambassador~ interface), so the mock only has to override the handful of
+calls the CUIS proxy actually makes.
+
+It is a *test double* — there is no networking, no FOM parsing, no real
+federation. It is an in-memory stand-in that records what CUIS sends it and,
+optionally, echoes it straight back. This is enough fidelity to exercise every
+CUIS code path (name resolution → handle → RTI call → callback → routing) end
+to end without a real Pitch RTI — which is exactly what makes the
+grpcui-as-sub-app setup work offline.
+
+* 1. Handles — fake but well-formed
+
+Real HLA handles are opaque byte blobs. The mock fabricates them with a
+monotonic counter packed into 4 bytes (~MockRTIambassador.java:30~ + the
+~createHandle~ helper):
+
+#+begin_src java
+private int _nextHandleId = 1;
+byte[] bytes = ByteBuffer.allocate(4).putInt(_nextHandleId++).array();
+return handleClass.getConstructor(byte[].class).newInstance((Object) bytes);
+#+end_src
+
+It instantiates the /real/ ~CuisHandleFactory.*Impl~ handle classes, so the
+handles are wire-compatible with what CUIS serializes into the
+~bytes object_handle~ / ~instance_handle~ fields you see in the protos. So every
+~Vehicle~, attribute, instance, and federate gets handle ~1, 2, 3, …~.
+
+* 2. connect / join — capturing the callback target
+
+The single most important thing the mock does is in ~connect~
+(~MockRTIambassador.java:144~):
+
+#+begin_src java
+_federateAmbassador = federateReference;
+#+end_src
+
+It stashes the ~FederateAmbassador~ that CUIS passes in. *That reference is what
+makes "reflection" possible* — it is the object the mock calls back on to
+deliver HLA callbacks. ~joinFederationExecution~ (~:217~) just flips a flag and
+returns a synthetic federate handle; ~createFederationExecution~ / ~destroy~ are
+pure no-ops (~:177~). There is no real federation to join.
+
+* 3. Pre-registration & name resolution — why grpcui needs ~Vehicle~/~Alert~
+
+~preRegisterObjectClass(name, attrs...)~ (~:62~) and
+~preRegisterInteractionClass~ (~:80~) build four maps: name→handle and
+handle→name, for both classes and their attributes/parameters. The lookups
+CUIS uses — ~getObjectClassHandle~ (~:434~), ~getAttributeHandle~ (~:445~),
+~getInteractionClassHandle~, ~getParameterHandle~ — just read those maps and
+throw ~NameNotFound~ if the name was never pre-registered.
+
+This is exactly why the grpcui launcher pre-registers
+~Vehicle [Position, Speed]~ and ~Alert [Message, Severity]~: when grpcui calls
+~Publish_Object_Attributes~ with ~name: "Vehicle"~, the CUIS service impl
+resolves that string to a handle via ~getObjectClassHandle~. Call it with
+~name: "Tank"~ and the mock throws ~NameNotFound~, which surfaces back as a gRPC
+error in grpcui.
+
+* 4. Publish / Subscribe — just bookkeeping
+
+These are deliberately trivial (~:254~–~:291~). Each one adds the handle to a
+~Set~:
+
+#+begin_src java
+public void publishObjectClassAttributes(...)    { _publishedObjectClasses.add(objectClass); }
+public void subscribeObjectClassAttributes(...)  { _subscribedObjectClasses.add(objectClass); }
+public void publishInteractionClass(...)         { _publishedInteractions.add(interactionClass); }
+public void subscribeInteractionClass(...)       { _subscribedInteractions.add(interactionClass); }
+#+end_src
+
+The mock does *not* enforce HLA rules (it will not reject an update for an
+unpublished class). The sets exist purely so tests can assert "did CUIS forward
+the publish to the RTI?" via ~isPublished(...)~ / ~isSubscribed(...)~. From
+grpcui's perspective these calls always succeed as long as the name resolves.
+
+* 5. The loopback — the "reflection" / "receive interaction" mechanism
+
+The mock's headline feature is ~_loopbackEnabled~ (default ~true~, ~:28~). A
+real RTI broadcasts your update over the network and /other/ federates get it
+back as a callback. The mock simulates that by immediately calling the stored
+~FederateAmbassador~ back on the same thread — effectively echoing your own
+data to you.
+
+** Update → Reflect (~updateAttributeValues~, ~:344~)
+
+#+begin_src java
+_capturedUpdates.add(new CapturedUpdate(objectInstance, attributeValues, userSuppliedTag));
+if (_loopbackEnabled && _federateAmbassador != null) {
+   _federateAmbassador.reflectAttributeValues(
+         objectInstance, attributeValues, userSuppliedTag,
+         CuisHandleFactory.transportationTypeHandle(new byte[]{0, 0, 0, 1}),
+         createHandle(FederateHandleImpl.class), null);   // synthetic transport + producing federate, no time
+}
+#+end_src
+
+** Send → Receive (~sendInteraction~, ~:371~)
+
+Captures into ~_capturedInteractions~, then calls
+~_federateAmbassador.receiveInteraction(...)~ with the same synthetic
+transport/federate args.
+
+** Register instance → Discover (~registerObjectInstance~, ~:296~)
+
+Creates an instance handle and calls
+~_federateAmbassador.discoverObjectInstance(...)~.
+
+** Request update → Provide (~requestAttributeValueUpdate~, ~:397~)
+
+Calls back ~provideAttributeValueUpdate(...)~.
+
+** Resulting data flow
+
+So the data flow when you drive it from grpcui is:
+
+#+begin_example
+grpcui  --Update_Attribute_Values-->  CUIS UFCommonUIServiceImpl
+                                          --> mockRti.updateAttributeValues()
+                                          --> [loopback] federateAmbassador.reflectAttributeValues()
+                                          --> CUIS RoutingEngine
+                                          --> Reflect_Attribute_Values RPC to subscribed sub-apps
+#+end_example
+
+That last hop needs a sub-app running its own ~UFCommonUIClientService~ server.
+grpcui is not one, so the reflect callback has no receiver — but the entire
+server-side path still executes, and ~_capturedUpdates~ records that it
+happened (the two ~getCaptured*()~ lists at ~:102~ / ~:107~ are the inspection
+hooks the integration tests assert on). The synthetic values it injects —
+transport type ~{0,0,0,1}~, a fresh federate handle, ~null~ time — are just
+plausible-looking filler so the ~FederateAmbassador~ signature is satisfied;
+nothing downstream validates them.
+
+Note ~setLoopbackEnabled(false)~ (~:95~) lets a test send updates /without/ the
+echo, so you can verify CUIS's outbound RTI path in isolation from its inbound
+routing path.
+
+* Summary
+
+| HLA concept              | Real RTI                       | This mock                              |
+|--------------------------+--------------------------------+----------------------------------------|
+| Handles                  | opaque RTI-assigned            | incrementing int → 4 bytes             |
+| FOM / classes            | parsed from XML                | ~preRegister*~ maps; ~NameNotFound~ otherwise |
+| publish/subscribe        | network declaration            | add to a ~Set~ (tracking only)         |
+| reflect/receive/discover | network callback from peers    | synchronous loopback to stored ~FederateAmbassador~ |
+| capture for asserts      | —                              | ~_capturedUpdates~ / ~_capturedInteractions~ |
+
+* See also
+
+- [[file:src/se/pitch/oss/fedpro/cuis/test/demo/CuisGrpcuiServer.java]] — fixed-port launcher for driving CUIS from grpcui/grpcurl.
+- [[file:src/se/pitch/oss/fedpro/cuis/test/demo/CuisDemo.java]] — full scripted demo with two sub-app simulators showing the callback direction too.
+- [[file:src/se/pitch/oss/fedpro/cuis/test/subapp/SubAppSimulator.java]] — a real ~UFCommonUIClientService~ server, i.e. what grpcui cannot be.

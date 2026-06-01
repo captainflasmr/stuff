@@ -1,0 +1,133 @@
+#+TITLE: Driving the CUIS Server with grpcui / grpcurl
+#+AUTHOR: FedProClient / CUIS
+#+OPTIONS: toc:2 num:t
+
+* What this is
+
+The CUIS server exposes the ~UFCommonUIService~ gRPC service — the service a
+*Web Sub-App* calls into to register, publish/subscribe, update attributes, and
+send interactions. Because [[file:../cuis-server/src/se/pitch/oss/fedpro/cuis/server/grpc/CuisGrpcServer.java]]
+registers ~ProtoReflectionService~, tools like
+[[https://github.com/fullstorydev/grpcui][grpcui]] and ~grpcurl~ can discover the
+service and all message types at runtime — *no =.proto= files needed*.
+
+So "simulating a sub-app with grpcui" = pointing grpcui at the CUIS server's
+port and invoking ~UFCommonUIService~ methods. grpcui /is/ the sub-app's
+outbound half.
+
+See [[file:MOCK_RTI.org]] for how the in-memory RTI behind the server works.
+
+* Prerequisites
+
+- ~grpcui~ and/or ~grpcurl~ on ~PATH~ (e.g. ~go install github.com/fullstorydev/grpcui/cmd/grpcui@latest~).
+- A JDK 21 toolchain (the Gradle build provisions one).
+- No network needed at run time — pass ~--offline~ if your Gradle cache is primed.
+
+* One important limitation
+
+A true sub-app /also/ runs its own ~UFCommonUIClientService~ server so CUIS can
+call back into it (~Discover_Object_Instance~, ~Reflect_Attribute_Values~,
+~Receive_Interaction~). *grpcui is client-only*, so it can stimulate the CUIS
+server but cannot receive those callbacks. For the callback direction use
+~CuisDemo~ / ~SubAppSimulator~ instead (see [[file:MOCK_RTI.org][MOCK_RTI.org → See also]]).
+
+* Step 1 — Start the CUIS server
+
+A dedicated fixed-port launcher,
+[[file:src/se/pitch/oss/fedpro/cuis/test/demo/CuisGrpcuiServer.java]], starts CUIS
+backed by a ~MockRTIambassador~, pre-registers a ~Vehicle~ object class and an
+~Alert~ interaction, then blocks. From the =java/= directory:
+
+#+begin_src sh
+# default port 50051
+./gradlew :cuis-test:runGrpcuiServer --console=plain
+
+# or pick a port, and run offline
+./gradlew :cuis-test:runGrpcuiServer --console=plain --offline -Pport=50051
+#+end_src
+
+It prints, once ready:
+
+#+begin_example
+CUIS gRPC server is up (reflection enabled).
+  Pre-registered object class : Vehicle [Position, Speed]
+  Pre-registered interaction   : Alert   [Message, Severity]
+#+end_example
+
+Leave it running. Press =C-c= (Ctrl+C) to stop.
+
+* Step 2 — Connect grpcui (the web UI)
+
+In another terminal:
+
+#+begin_src sh
+grpcui -plaintext localhost:50051
+#+end_src
+
+grpcui prints a URL such as ~http://127.0.0.1:NNNNN/~ and opens it in your
+browser. To bind a fixed port (e.g. when port-forwarding from a VM):
+
+#+begin_src sh
+grpcui -plaintext -bind 127.0.0.1 -port 18080 localhost:50051
+# then browse to http://127.0.0.1:18080/
+#+end_src
+
+In the web form, choose service ~cui_hla_server.UFCommonUIService~, pick a
+method, fill in the request, and *Invoke*.
+
+* Step 3 — Suggested call order
+
+The service is stateful: you need a client id before you can publish/subscribe.
+
+1. *Register_Client* — returns ~the_client_id~. Note the ~id~ (the first client gets ~1~).
+   #+begin_src json
+   { "client_addr": "127.0.0.1", "client_port_number": 9999, "little_endian": false }
+   #+end_src
+2. *Publish_Object_Attributes* / *Subscribe_Object_Attributes* — ~name: "Vehicle"~,
+   attributes ~Position~ / ~Speed~, using the client id from step 1.
+3. *Publish_Interaction* / *Subscribe_Interaction* — ~name: "Alert"~.
+4. *Update_Attribute_Values* / *Send_Interaction* — the data-carrying calls.
+
+Only the pre-registered names (~Vehicle~, ~Alert~ and their members) resolve;
+anything else comes back as ~NameNotFound~. To add more, edit the
+~preRegister*~ calls in ~CuisGrpcuiServer~.
+
+* The grpcurl equivalents (scriptable, no browser)
+
+Everything above also works headless with ~grpcurl~ — handy for the VM /
+offline workflow:
+
+#+begin_src sh
+# discover what's there (via reflection)
+grpcurl -plaintext localhost:50051 list
+grpcurl -plaintext localhost:50051 list cui_hla_server.UFCommonUIService
+grpcurl -plaintext localhost:50051 describe cui_hla_server.UFCommonUIService
+
+# register a client
+grpcurl -plaintext \
+  -d '{"client_addr":"127.0.0.1","client_port_number":9999,"little_endian":false}' \
+  localhost:50051 cui_hla_server.UFCommonUIService/Register_Client
+
+# publish Vehicle attributes for client id 1
+grpcurl -plaintext \
+  -d '{"the_client_id":{"id":1},"name":"Vehicle","attr_val_list":[]}' \
+  localhost:50051 cui_hla_server.UFCommonUIService/Publish_Object_Attributes
+#+end_src
+
+A successful ~Register_Client~ looks like:
+
+#+begin_example
+{
+  "successful": { "successful": true },
+  "the_client_id": { "id": 1 }
+}
+#+end_example
+
+* Notes for the offline / VM setup
+
+- The server speaks *plaintext* (no TLS); always pass ~-plaintext~ to grpcui/grpcurl.
+- If grpcui runs on your host but the server runs in the VM, forward the port
+  (e.g. ~ssh -L 50051:localhost:50051 ...~) and point grpcui at ~localhost:50051~.
+- Each ~Update_Attribute_Values~ / ~Send_Interaction~ is captured by the mock RTI
+  and (with loopback on) echoed back through CUIS's RoutingEngine — see
+  [[file:MOCK_RTI.org][MOCK_RTI.org]] for the full data-flow path.
