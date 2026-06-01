@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<objectModel xsi:schemaLocation="http://standards.ieee.org/IEEE1516-2025 http://standards.ieee.org/downloads/1516/1516.2-2025/IEEE1516-DIF-2025.xsd" xmlns="http://standards.ieee.org/IEEE1516-2025" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <modelIdentification>
+        <name>CuisFom.xml</name>
+        <type>FOM</type>
+        <version>1.0</version>
+        <modificationDate>2026-06-01</modificationDate>
+        <securityClassification>unclassified</securityClassification>
+        <copyright></copyright>
+        <purpose>Starter FOM for the CUIS proxy federate.</purpose>
+        <applicationDomain></applicationDomain>
+        <description>
+            Declares the classes the CUIS MockRTIambassador pre-registers, so a
+            real RTI (e.g. Pitch pRTI via the Federate Protocol Server) accepts
+            the same name lookups the in-memory mock used to satisfy. Replace
+            and extend these with the real CUIS object model. Note that
+            Sub-Apps reference classes by name; a real RTI may require the
+            fully-qualified name (e.g. "HLAobjectRoot.Vehicle") where the mock
+            accepted the bare leaf name ("Vehicle").
+        </description>
+        <useLimitation></useLimitation>
+        <other></other>
+    </modelIdentification>
+    <objects>
+        <objectClass>
+            <name>HLAobjectRoot</name>
+            <objectClass>
+                <name>Vehicle</name>
+                <sharing>PublishSubscribe</sharing>
+                <semantics>A tracked vehicle reported through CUIS.</semantics>
+                <attribute>
+                    <name>Position</name>
+                    <dataType>HLAfloat64BE</dataType>
+                    <updateType>Conditional</updateType>
+                    <updateCondition>On change</updateCondition>
+                    <valueRequired>false</valueRequired>
+                    <ownership>NoTransfer</ownership>
+                    <sharing>PublishSubscribe</sharing>
+                    <transportation>HLAreliable</transportation>
+                    <order>Receive</order>
+                    <semantics>The vehicle's position.</semantics>
+                </attribute>
+                <attribute>
+                    <name>Speed</name>
+                    <dataType>HLAfloat64BE</dataType>
+                    <updateType>Conditional</updateType>
+                    <updateCondition>On change</updateCondition>
+                    <valueRequired>false</valueRequired>
+                    <ownership>NoTransfer</ownership>
+                    <sharing>PublishSubscribe</sharing>
+                    <transportation>HLAreliable</transportation>
+                    <order>Receive</order>
+                    <semantics>The vehicle's speed.</semantics>
+                </attribute>
+            </objectClass>
+        </objectClass>
+    </objects>
+    <interactions>
+        <interactionClass>
+            <name>HLAinteractionRoot</name>
+            <interactionClass>
+                <name>Alert</name>
+                <sharing>PublishSubscribe</sharing>
+                <transportation>HLAreliable</transportation>
+                <order>Receive</order>
+                <semantics>An alert raised through CUIS.</semantics>
+                <parameter>
+                    <name>Message</name>
+                    <dataType>HLAunicodeString</dataType>
+                    <semantics>The alert text.</semantics>
+                </parameter>
+                <parameter>
+                    <name>Severity</name>
+                    <dataType>HLAinteger32BE</dataType>
+                    <semantics>The alert severity level.</semantics>
+                </parameter>
+            </interactionClass>
+        </interactionClass>
+    </interactions>
+    <tags>
+        <updateReflectTag>
+            <dataType>NA</dataType>
+            <semantics>NA</semantics>
+        </updateReflectTag>
+        <sendReceiveTag>
+            <dataType>NA</dataType>
+            <semantics>NA</semantics>
+        </sendReceiveTag>
+    </tags>
+    <switches/>
+    <dataTypes>
+        <simpleDataTypes/>
+        <referenceDataTypes/>
+        <enumeratedDataTypes/>
+        <arrayDataTypes/>
+        <fixedRecordDataTypes/>
+        <variantRecordDataTypes/>
+    </dataTypes>
+    <notes/>
+</objectModel>

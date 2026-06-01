@@ -1,0 +1,234 @@
+#+TITLE: Connecting CUIS to a Real RTI Over the Network
+#+AUTHOR: FedProClient / CUIS
+#+OPTIONS: toc:2 num:t
+
+* Overview
+
+This tutorial shows how to run the CUIS proxy federate (~java/cuis-server~)
+against a *real* RTI over the network — specifically Pitch pRTI 6.1.3 reached
+through the Federate Protocol — instead of the in-memory ~MockRTIambassador~
+used by the tests and demos.
+
+The mock is a test double: no networking, no FOM parsing, no real federation
+(see [[file:../cuis-test/MOCK_RTI.org]]). Swapping in a real RTI is *not* a
+matter of changing a hostname on the mock — the mock is an in-process object.
+It means constructing a real ~RTIambassador~, giving it a FOM, and pointing it
+at a Federate Protocol Server. This document walks through both the code that
+makes that possible and the deployment steps around it.
+
+* 1. The architecture — where the seam is
+
+Everything in CUIS funnels through one constructor,
+~CuisMain(RTIambassador, grpcPort)~. Tests pass a ~MockRTIambassador~;
+production passes a real ambassador obtained from the Federate Protocol client.
+
+#+begin_example
+  Sub-Apps
+     │  gRPC (default :50051)
+     ▼
+  CuisGrpcServer ──► UFCommonUIServiceImpl ──► RtiAdapter
+                                                  │  RTIambassador("Federate Protocol")
+                                                  ▼
+                                          FedPro client  (this repo, :client)
+                                                  │  TCP/TLS, default :15164
+                                                  ▼
+                                  Federate Protocol Server   ◄── ships inside Pitch pRTI 6.1.3
+                                                  │
+                                                  ▼
+                                          pRTI CRC  ◄── your license lives here
+#+end_example
+
+Key consequence: *the FedPro client is the network link to pRTI.* You do **not**
+put any pRTI jar on the CUIS classpath. ~cuis-server~ already depends on
+~project(":client")~ (~build.gradle.kts:19~), and that module ships the service
+provider ~client/resources/META-INF/services/hla.rti1516_2025.RtiFactory~, so
+
+#+begin_src java
+RtiFactoryFactory.getRtiFactory("Federate Protocol")
+#+end_src
+
+resolves at runtime with no extra dependency. Integration is a runtime /
+deployment concern, not a build concern.
+
+* 2. What the real RTI needs that the mock faked
+
+| HLA concept       | Mock did…                                   | Real RTI needs…                                |
+|-------------------+---------------------------------------------+------------------------------------------------|
+| FOM / classes     | ~preRegisterObjectClass(...)~ maps          | a real FOM module XML (FDD), parsed on create  |
+| connect address   | ignored (in-process)                        | a Federate Protocol Server address             |
+| federation        | flags + synthetic handles                   | a real create/join against the CRC             |
+| reflect/receive   | synchronous loopback to your own federate   | a *second* federate publishing the data        |
+| name lookup       | accepted bare ~"Vehicle"~                   | name must match the FOM (maybe qualified)      |
+
+* 3. The code wiring (already in the repo)
+
+Three changes turn the no-op ~CuisMain.main()~ stub into a real launcher.
+
+** 3.1 RtiConfiguration overload on the adapter
+
+~RtiAdapter.connectAndJoin~ gained a third parameter so the connection can
+target a FedPro server other than the default ~localhost:15164~. The original
+two-arg method still exists for the mock-based tests and delegates with ~null~.
+
+#+begin_src java
+// java/cuis-server/src/se/pitch/oss/fedpro/cuis/server/rti/RtiAdapter.java
+public void connectAndJoin(String federationName, String[] fomModules, RtiConfiguration configuration)
+      throws Exception
+{
+   if (configuration != null) {
+      _rtiAmbassador.connect(this, CallbackModel.HLA_IMMEDIATE, configuration);
+   } else {
+      _rtiAmbassador.connect(this, CallbackModel.HLA_IMMEDIATE);
+   }
+   // … createFederationExecution(federationName, fomModules) + joinFederationExecution …
+}
+#+end_src
+
+~CuisMain.start~ gained a matching ~start(federationName, fomModules, configuration)~
+overload that passes the configuration straight through.
+
+** 3.2 The production launcher
+
+~CuisMain.main()~ now resolves settings from command-line args, falling back to
+environment variables, falling back to defaults — so the same binary works from
+a shell or a container:
+
+#+begin_src java
+RtiFactory factory = RtiFactoryFactory.getRtiFactory("Federate Protocol");
+RTIambassador rtiAmbassador = factory.getRtiAmbassador();
+
+RtiConfiguration configuration = RtiConfiguration.createConfiguration()
+      .withRtiAddress(rtiAddress);            // e.g. "prti-host:15164"
+
+CuisMain cuis = new CuisMain(rtiAmbassador, grpcPort);
+Runtime.getRuntime().addShutdownHook(new Thread(cuis::stop, "cuis-shutdown"));
+cuis.start(federationName, new String[] {fomPath}, configuration);
+cuis.awaitTermination();
+#+end_src
+
+| Position  | Env var            | Default            | Meaning                          |
+|-----------+--------------------+--------------------+----------------------------------|
+| ~args[0]~ | ~CUIS_FEDERATION~  | ~CUIS~             | Federation execution name        |
+| ~args[1]~ | ~CUIS_FOM~         | ~CuisFom.xml~      | Path to the FOM module XML        |
+| ~args[2]~ | ~CUIS_RTI_ADDRESS~ | ~localhost:15164~  | Federate Protocol Server address |
+| ~args[3]~ | ~CUIS_GRPC_PORT~   | ~50051~            | gRPC port exposed to Sub-Apps     |
+
+The shutdown hook resigns the federation and disconnects cleanly on SIGINT/SIGTERM.
+
+** 3.3 A starter FOM
+
+~java/cuis-server/CuisFom.xml~ is a 1516-2025 FDD declaring the classes the mock
+pre-registered — ~Vehicle [Position, Speed]~ and ~Alert [Message, Severity]~ —
+with HLA datatypes coherent with ~DataValueCodec~. Replace and extend it with
+your real object model.
+
+* 4. pRTI side — deployment steps (not in this repo)
+
+These happen on the machine(s) running Pitch pRTI 6.1.3. Consult the pRTI 6.1.3
+User's Guide for the exact launcher names on your platform; the Federate
+Protocol Server section is the relevant one.
+
+1. *Install pRTI 6.1.3 and apply your license.*
+2. *Provide the FOM.* Either use ~CuisFom.xml~ from this repo or author the real
+   CUIS object model as a 1516-2025 FDD. The FOM is loaded by
+   ~createFederationExecution~ — the FOM path you pass to CUIS must be reachable
+   from the CUIS process's working directory (or be absolute).
+3. *Start pRTI* (the CRC).
+4. *Start the Federate Protocol Server.* It listens on TCP *15164* by default,
+   which matches the CUIS default. This is the server counterpart to this repo's
+   client.
+
+* 5. Running CUIS against pRTI
+
+From the ~java/~ directory:
+
+#+begin_src sh
+# All four settings explicit:
+./gradlew :cuis-server:run \
+  --args="CUIS CuisFom.xml prti-host:15164 50051"
+#+end_src
+
+Or build a self-contained distribution and run it standalone:
+
+#+begin_src sh
+./gradlew :cuis-server:installDist
+# -> cuis-server/build/install/cuis-server/bin/cuis-server
+
+CUIS_RTI_ADDRESS=prti-host:15164 \
+CUIS_FOM=/abs/path/CuisFom.xml \
+  cuis-server/build/install/cuis-server/bin/cuis-server
+#+end_src
+
+~distZip~ produces a zip of the same layout for shipping elsewhere.
+
+* 6. Extra Federate Protocol / LRC settings
+
+Anything beyond the server address — TLS, heartbeat timeouts, LRC tuning — is
+passed through the standard mechanisms documented in [[file:../../doc/Settings.md]],
+*no code change required*. Two common routes:
+
+** Via environment variable
+
+#+begin_src sh
+export FEDPRO_CLIENT_SETTINGS="connect.protocol=tls,FED_TIMEOUT_HEART=200"
+./gradlew :cuis-server:run --args="CUIS CuisFom.xml prti-host:15164 50051"
+#+end_src
+
+** Via additionalSettings (if you extend the launcher)
+
+LRC settings and ~FedPro.~-prefixed client settings can also ride in the
+~RtiConfiguration~:
+
+#+begin_src java
+RtiConfiguration.createConfiguration()
+   .withRtiAddress("prti-host:15164")
+   .withAdditionalSettings("FedPro.connect.protocol=tls\nLRC.skipVersionCheck=false");
+#+end_src
+
+Note: LRC settings supplied this way only apply if the Federate Protocol Server
+is configured to trust them; otherwise the server's own RID governs the CRC
+connection.
+
+* 7. Verifying end to end
+
+A real RTI does *not* echo your own updates back to you — unlike the mock's
+loopback. So a single CUIS federate driven from grpcui will publish successfully
+but see *zero* reflects/receives. To observe the full round trip you need a
+second participant publishing the data:
+
+- another Sub-App (or a second CUIS instance) publishing ~Vehicle~ / sending
+  ~Alert~, or
+- any Pitch federate (e.g. one launched from pRTI tooling) joined to the same
+  federation and publishing those classes.
+
+With two participants joined, an update from one should arrive at the other as
+~reflectAttributeValues~ → ~RoutingEngine~ → ~Reflect_Attribute_Values~ RPC to
+subscribed Sub-Apps.
+
+* 8. Troubleshooting
+
+| Symptom                                   | Likely cause / fix                                                                 |
+|-------------------------------------------+------------------------------------------------------------------------------------|
+| ~ConnectionFailed~ on connect             | FedPro Server not running, wrong host/port, or firewall on 15164.                  |
+| ~NameNotFound~ on a class/attribute       | Sub-App name string doesn't match the FOM. Real RTI may need the *qualified* name  |
+|                                           | (e.g. ~HLAobjectRoot.Vehicle~) where the mock accepted bare ~Vehicle~.             |
+| ~CouldNotOpenFDD~ / create fails          | FOM path not reachable from the working dir; pass an absolute path.                |
+| Publishes work but no reflects ever arrive | Expected with one federate — no loopback. Add a second publisher (see §7).         |
+| ~Unauthorized~                            | Federate Protocol Server rejected the connection settings; check server trust/RID. |
+| TLS handshake errors                      | Set ~connect.protocol=tls~ and keystore settings; see [[file:../../doc/Settings.md]]. |
+
+* 9. Reverting to the mock for tests
+
+None of the above affects the test path. The unit/integration tests and the
+grpcui/demo launchers still inject ~MockRTIambassador~ via the two-arg
+~connectAndJoin~ / ~start~ overloads, so they keep running fully offline with no
+RTI. See [[file:../cuis-test/MOCK_RTI.org]] and [[file:../cuis-test/GRPCUI.org]].
+
+* See also
+
+- [[file:CuisFom.xml]] — starter FOM (Vehicle, Alert).
+- [[file:src/se/pitch/oss/fedpro/cuis/server/CuisMain.java]] — production launcher.
+- [[file:src/se/pitch/oss/fedpro/cuis/server/rti/RtiAdapter.java]] — RTI/gRPC bridge.
+- [[file:DESIGN.org]] — overall CUIS design.
+- [[file:../../doc/Settings.md]] — full list of Federate Protocol client settings.
+- [[file:../cuis-test/MOCK_RTI.org]] — how the test mock differs from a real RTI.
