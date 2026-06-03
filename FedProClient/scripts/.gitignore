@@ -1,0 +1,5 @@
+# Site-local pRTI launcher paths / overrides — never committed.
+cuis-env.local.sh
+
+# Byte-compiled elisp.
+*.elc

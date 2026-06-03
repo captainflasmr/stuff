@@ -1,0 +1,78 @@
+#+TITLE: CUIS run scripts
+#+OPTIONS: toc:nil num:nil
+
+Bring up the full CUIS / pRTI stack with one command, each process in its own terminal/window - from a plain shell or from Emacs.
+
+#+begin_example
+CRC (pRTI)  ──▶  Federate Protocol Server :15164  ──▶  CUIS proxy federate :50051
+                                                            ▲ gRPC          │ routes callbacks
+                              HLA publisher ──┘ (federate #2)                ▼
+                                                                      Sub-App subscriber
+#+end_example
+
+Five processes, started in dependency order. Each ~start-*.sh~ *waits on its upstream port before launching*, so ordering is self-correcting whether you start them by hand or all at once.
+
+| # | Process                  | Script                 | Listens / connects                                           |
+|---+--------------------------+------------------------+--------------------------------------------------------------|
+| 1 | CRC (pRTI)               | ~start-crc.sh~         | CRC on 8989                                                  |
+| 2 | Federate Protocol Server | ~start-fedpro.sh~      | 15164 (waits on CRC)                                         |
+| 3 | CUIS proxy federate      | ~start-cuis-server.sh~ | gRPC 50051 (waits on 15164) - HLA federate #1                |
+| 4 | Sub-App subscriber       | ~start-subapp.sh~      | gRPC client of CUIS (waits on 50051)                         |
+| 5 | HLA publisher            | ~start-publisher.sh~   | connects to 15164 (waits on 15164 + 50051) - HLA federate #2 |
+
+* One-time setup - point at your pRTI install
+
+The two pRTI launchers (CRC + Federate Protocol Server) are not in this repo and vary by platform. Set them in a *~cuis-env.local.sh~* next to the scripts (it overrides ~cuis-env.sh~ and is git-ignored):
+
+#+begin_src sh
+# scripts/cuis-env.local.sh
+PRTI_HOME="/opt/PitchPrti6"
+CRC_CMD="$PRTI_HOME/bin/prti"            # your CRC / pRTI launcher
+FEDPRO_CMD="$PRTI_HOME/bin/fedproserver" # your Federate Protocol Server launcher
+#+end_src
+
+If a launcher path is wrong the start script stops with a message telling you exactly which variable to set. See the pRTI 6.1.3 User's Guide, "Federate Protocol Server" section, for the launcher names on your platform.
+
+All other knobs (ports, federation name, FOM, object/interaction names, publish period) also live in ~cuis-env.sh~ and can be overridden the same way or via the environment.
+
+* From a shell
+
+Open five terminals and run, in order (each blocks; Ctrl-C to stop):
+
+#+begin_src sh
+./start-crc.sh
+./start-fedpro.sh
+./start-cuis-server.sh
+./start-subapp.sh
+./start-publisher.sh
+#+end_src
+
+Because each script waits on its upstream port, you can also just fire off all five and let them sort themselves out. Check progress any time with:
+
+#+begin_src sh
+./status.sh
+#+end_src
+
+* From Emacs (single command)
+
+#+begin_src elisp
+(load "/path/to/java/scripts/cuis-run.el")
+#+end_src
+
+Then ~M-x cuis-system-start~. It opens all five processes, each in its own ~*cuis:NAME*~ ~term~ buffer, tiled into a balanced grid. Other commands:
+
+- ~M-x cuis-system-status~ - run ~status.sh~ in a buffer
+- ~M-x cuis-system-stop~   - send Ctrl-C to every process (reverse order)
+- ~M-x cuis-system-kill~   - kill the processes and their buffers
+- ~M-x cuis-start-crc~ / ~-fedpro~ / ~-cuis-server~ / ~-subapp~ / ~-publisher~ - start just one, in its own buffer
+
+To autoload without a full path, add the directory to ~load-path~:
+
+#+begin_src elisp
+(add-to-list 'load-path "/path/to/java/scripts")
+(autoload 'cuis-system-start "cuis-run" nil t)
+#+end_src
+
+* Success criteria
+
+Watch the ~subapp~ window: after ~Subscribe object 'Vehicle' … : OK~ you should see a stream of ~[DISCOVER]~ then ~[REFLECT]~ lines as the publisher updates Position/Speed - the full real-RTI round trip.
