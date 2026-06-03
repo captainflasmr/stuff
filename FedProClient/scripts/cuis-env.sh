@@ -21,6 +21,11 @@ CRC_CMD="${CRC_CMD:-$PRTI_HOME/bin/prti}"
 # Command that starts the Federate Protocol Server (starts SEPARATELY from the
 # CRC and listens on 15164). Adjust the basename to your install if needed.
 FEDPRO_CMD="${FEDPRO_CMD:-$PRTI_HOME/bin/fedproserver}"
+# The Federate Protocol Server must run as root. start-fedpro.sh launches it
+# via this; the OTHER processes deliberately stay unprivileged (running gradle
+# as root would litter the build/.gradle cache with root-owned files). Set to
+# "" if you already launch that terminal as root, or to e.g. "sudo -E".
+FEDPRO_SUDO="${FEDPRO_SUDO:-sudo}"
 
 # --- Hosts / ports -----------------------------------------------------------
 CRC_HOST="${CRC_HOST:-localhost}";      CRC_PORT="${CRC_PORT:-8989}"
@@ -71,8 +76,9 @@ wait_for_port() {
 # require_cmd VAR_NAME COMMAND HINT
 require_cmd() {
   local var="$1" cmd="$2" hint="$3"
-  # Accept either an executable on PATH or an existing file path.
-  if command -v "$cmd" >/dev/null 2>&1 || [ -x "$cmd" ]; then return 0; fi
+  # Accept an executable on PATH, or any existing path (it may be root-only to
+  # execute, which is fine — we launch it via sudo).
+  if command -v "$cmd" >/dev/null 2>&1 || [ -e "$cmd" ]; then return 0; fi
   cat >&2 <<EOF
 
 ERROR: $var points at '$cmd', which was not found / is not executable.

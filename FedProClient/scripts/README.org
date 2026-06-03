@@ -35,6 +35,23 @@ If a launcher path is wrong the start script stops with a message telling you ex
 
 All other knobs (ports, federation name, FOM, object/interaction names, publish period) also live in ~cuis-env.sh~ and can be overridden the same way or via the environment.
 
+** Root: only the Federate Protocol Server
+
+The Federate Protocol Server must run as root, so ~start-fedpro.sh~ launches it
+via ~$FEDPRO_SUDO~ (default ~sudo~), prompting for a password in its
+terminal/buffer. The *other* processes deliberately stay unprivileged — running
+gradle as root would litter ~build/~ and the ~.gradle~ cache with root-owned
+files. Options for ~cuis-env.local.sh~:
+
+#+begin_src sh
+FEDPRO_SUDO="sudo"      # default: prompt for password (works in an Emacs term)
+FEDPRO_SUDO="sudo -E"   # keep your environment across the elevation
+FEDPRO_SUDO=""          # you already launch that one terminal as root
+#+end_src
+
+To avoid the prompt entirely, add a NOPASSWD sudoers rule for just that
+launcher.
+
 * From a shell
 
 Open five terminals and run, in order (each blocks; Ctrl-C to stop):
