@@ -9,7 +9,22 @@
 
 # --- Resolve locations relative to this file (works from any checkout path) ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAVA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"      # the gradle root (.../java)
+
+# The gradle root is the nearest ancestor that contains gradlew. Walking up
+# (rather than assuming a fixed depth) means the scripts work no matter where
+# under the project they live. Override by setting JAVA_DIR in the environment
+# or cuis-env.local.sh.
+if [ -z "${JAVA_DIR:-}" ]; then
+  _d="$SCRIPT_DIR"
+  while [ "$_d" != "/" ] && [ ! -x "$_d/gradlew" ]; do _d="$(dirname "$_d")"; done
+  JAVA_DIR="$_d"
+fi
+if [ ! -x "$JAVA_DIR/gradlew" ]; then
+  echo "ERROR: could not find gradlew above $SCRIPT_DIR." >&2
+  echo "       Set JAVA_DIR to the gradle root (the dir containing gradlew)" >&2
+  echo "       in cuis-env.local.sh or the environment." >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # --- pRTI launchers (NOT in this repo — set these to your install) -----------
 # These two are platform-specific; see the pRTI 6.1.3 User's Guide, the
