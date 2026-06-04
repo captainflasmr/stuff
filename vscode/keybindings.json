@@ -1,0 +1,367 @@
+// Place your key bindings in this file to override the defaults
+[
+    {
+        "key": "alt+shift+/",
+        "command": "editor.action.goToReferences",
+        "when": "editorHasReferenceProvider && editorTextFocus && !inReferenceSearchEditor && !isInEmbeddedEditor"
+    },
+    {
+        "key": "alt+shift+u",
+        "command": "workbench.action.moveEditorLeftInGroup"
+    },
+    {
+        "key": "alt+shift+i",
+        "command": "workbench.action.moveEditorRightInGroup"
+    },
+    {
+        "key": "alt+s i",
+        "command": "workbench.action.moveEditorToNextGroup"
+    },
+    {
+        "key": "alt+s u",
+        "command": "workbench.action.moveEditorToPreviousGroup"
+    },
+    {
+        "key": "alt+;",
+        "command": "workbench.action.navigateEditorGroups",
+        "when": "multipleEditorGroups && !terminalFocus"
+    },
+    {
+        "key": "alt+;",
+        "command": "workbench.action.splitEditorRight",
+        "when": "!multipleEditorGroups && !terminalFocus"
+    },
+    {
+        "key": "p",
+        "command": "runCommands",
+        "args": {
+            "commands": [
+                "emacs-mcx.previousLine",
+                "emacs-mcx.moveEndOfLine"
+            ]
+        },
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "n",
+        "command": "runCommands",
+        "args": {
+            "commands": [
+                "emacs-mcx.nextLine",
+                "emacs-mcx.moveEndOfLine"
+            ]
+        },
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "+",
+        "command": "extension.dired.createDir",
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "-",
+        "command": "extension.dired.createFile",
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "f",
+        "command": "extension.dired.enter",
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "ctrl+x d",
+        "command": "extension.multiCommand.execute",
+        "args": { "command": "multiCommand.diredOpen" },
+        "when": "editorTextFocus && !inDebugRepl"
+    },
+    {
+        "key": "ctrl+i",
+        "command": "editor.action.formatDocument",
+        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && !inCompositeEditor"
+    },
+    {
+        "key": "ctrl+z",
+        "command": "workbench.action.files.save"
+    },
+    {
+        "key": "alt+w",
+        "command": "editor.action.clipboardCopyAction",
+        "when": "editorTextFocus && !editorHasSelection"
+    },
+    {
+        "key": "alt+j",
+        "command": "cursorMove",
+        "args": {
+            "to": "down",
+            "by": "line",
+            "value": 5
+        },
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "alt+k",
+        "command": "cursorMove",
+        "args": {
+            "to": "up",
+            "by": "line",
+            "value": 5
+        },
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "alt+g i",
+        "command": "workbench.action.gotoSymbol",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "alt+,",
+        "command": "workbench.action.navigateBack",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "alt+.",
+        "command": "editor.action.goToDeclaration",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "ctrl+w h",
+        "command": "workbench.action.previousEditor"
+    },
+    {
+        "key": "alt+u",
+        "command": "workbench.action.previousEditor"
+    },
+    {
+        "key": "alt+u",
+        "command": "workbench.action.previousPanelView",
+        "when": "activePanel != ''"
+    },
+    {
+        "key": "ctrl+w l",
+        "command": "workbench.action.nextEditor"
+    },
+    {
+        "key": "alt+i",
+        "command": "workbench.action.nextEditor"
+    },
+    {
+        "key": "alt+i",
+        "command": "workbench.action.nextPanelView",
+        "when": "activePanel != ''"
+    },
+    {
+        "key": "alt+m",
+        "command": "workbench.action.selectTheme"
+    },
+    {
+        "key": "alt+shift+m",
+        "command": "workbench.actions.view.problems",
+        "when": "workbench.panel.markers.view.active"
+    },
+    // Window resize — match Emacs M-{H,J,K,L}: h=narrower, l=wider, j=shorter, k=taller
+    {
+        "key": "alt+shift+l",
+        "command": "workbench.action.decreaseViewSize"
+    },
+    {
+        "key": "alt+shift+h",
+        "command": "workbench.action.increaseViewSize"
+    },
+    {
+        "key": "alt+shift+j",
+        "command": "workbench.action.decreaseViewSize"
+    },
+    {
+        "key": "alt+shift+k",
+        "command": "workbench.action.increaseViewSize"
+    },
+    {
+        "key": "ctrl+q",
+        "command": "workbench.action.toggleMenuBar"
+    },
+    {
+        "key": "ctrl+m",
+        "command": "list.select",
+        "when": "listFocus"
+    },
+    {
+        "key": "ctrl+i",
+        "command": "list.select",
+        "when": "listFocus"
+    },
+    {
+        "key": "alt+z",
+        "command": "editor.action.toggleWordWrap",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "ctrl+x '",
+        "command": "workbench.action.toggleAuxiliaryBar"
+    },
+    {
+        "key": "ctrl+alt+b",
+        "command": "-workbench.action.toggleAuxiliaryBar"
+    },
+    {
+        "key": "alt+0",
+        "command": "workbench.action.closeEditorsInGroup",
+        "when": "!terminalFocus && !auxiliaryBarFocus"
+    },
+    // Window splits — match Emacs M-1/2/3
+    {
+        "key": "alt+1",
+        "command": "workbench.action.closeEditorsInOtherGroups"
+    },
+    {
+        "key": "alt+2",
+        "command": "workbench.action.splitEditorDown"
+    },
+    {
+        "key": "alt+3",
+        "command": "workbench.action.splitEditorRight"
+    },
+    {
+        "key": "ctrl+w s",
+        "command": "workbench.action.splitEditorDown",
+        "when": "!terminalFocus"
+    },
+    {
+        "key": "ctrl+w v",
+        "command": "workbench.action.splitEditorRight",
+        "when": "!terminalFocus"
+    },
+    {
+        "key": "ctrl+w o",
+        "command": "workbench.action.closeEditorsInOtherGroups",
+        "when": "!terminalFocus"
+    },
+    // Windmove between editor groups — match Emacs C-M-{h,j,k,l}
+    {
+        "key": "ctrl+alt+h",
+        "command": "workbench.action.focusLeftGroup"
+    },
+    {
+        "key": "ctrl+alt+l",
+        "command": "workbench.action.focusRightGroup"
+    },
+    {
+        "key": "ctrl+alt+j",
+        "command": "workbench.action.focusBelowGroup"
+    },
+    {
+        "key": "ctrl+alt+k",
+        "command": "workbench.action.focusAboveGroup"
+    },
+    {
+        "key": "alt+e",
+        "command": "extension.multiCommand.execute",
+        "args": { "command": "multiCommand.diredOpen" },
+        "when": "editorTextFocus && !editorHasSelection"
+    },
+    {
+        "key": "alt+e",
+        "command": "extension.multiCommand.execute",
+        "args": { "command": "multiCommand.diredGoUp" },
+        "when": "dired.open && !findWidgetVisible && !inQuickOpen"
+    },
+    {
+        "key": "ctrl+c j",
+        "command": "workbench.action.navigateBack"
+    },
+    {
+        "key": "ctrl+c k",
+        "command": "workbench.action.navigateForward"
+    },
+    {
+        "key": "ctrl+x m",
+        "command": "workbench.action.toggleSidebarVisibility",
+        "when": "explorerViewletVisible"
+    },
+    {
+        "key": "ctrl+x m",
+        "command": "workbench.view.explorer",
+        "when": "!explorerViewletVisible"
+    },
+    // Comment toggle — match Emacs C-;
+    {
+        "key": "ctrl+;",
+        "command": "editor.action.commentLine",
+        "when": "editorTextFocus && !editorReadonly"
+    },
+    // Beginning/end of buffer — match Emacs C-x [ / C-x ]
+    {
+        "key": "ctrl+x [",
+        "command": "cursorTop",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "ctrl+x ]",
+        "command": "cursorBottom",
+        "when": "editorTextFocus"
+    },
+    // Source Control / git — match Emacs C-x g (magit-status)
+    {
+        "key": "ctrl+x g",
+        "command": "workbench.view.scm"
+    },
+    // Find file / grep — match Emacs C-c f / C-c g
+    {
+        "key": "ctrl+c f",
+        "command": "workbench.action.quickOpen"
+    },
+    {
+        "key": "ctrl+c g",
+        "command": "workbench.action.findInFiles"
+    },
+    // Shell — match Emacs M-[
+    {
+        "key": "alt+[",
+        "command": "workbench.action.terminal.toggleTerminal"
+    },
+    // Manual completion — match Emacs C-c TAB and C-M-i
+    {
+        "key": "ctrl+c tab",
+        "command": "editor.action.triggerSuggest",
+        "when": "editorTextFocus && !editorReadonly"
+    },
+    {
+        "key": "ctrl+alt+i",
+        "command": "editor.action.triggerSuggest",
+        "when": "editorTextFocus && !editorReadonly"
+    },
+    // Bookmarks — match Emacs M-o (bookmark-jump) and C-x r {m,b,l}
+    {
+        "key": "alt+o",
+        "command": "bookmarks.listFromAllFiles"
+    },
+    {
+        "key": "ctrl+x r m",
+        "command": "bookmarks.toggle",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "ctrl+x r b",
+        "command": "bookmarks.listFromAllFiles"
+    },
+    {
+        "key": "ctrl+x r l",
+        "command": "bookmarks.list"
+    },
+    // Error/warning navigation — match IntelliJ Alt+Shift+N/P
+    {
+        "key": "alt+shift+n",
+        "command": "editor.action.marker.next",
+        "when": "editorTextFocus"
+    },
+    {
+        "key": "alt+shift+p",
+        "command": "editor.action.marker.prev",
+        "when": "editorTextFocus"
+    },
+    // Accept selection in command palette / quick open
+    {
+        "key": "ctrl+j",
+        "command": "workbench.action.acceptSelectedQuickOpenItem",
+        "when": "inQuickOpen"
+    }
+]
