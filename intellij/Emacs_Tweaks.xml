@@ -162,4 +162,7 @@
   <action id="ToggleLineBreakpoint">
     <keyboard-shortcut first-keystroke="f9" />
   </action>
+  <action id="ToggleZenMode">
+    <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="z" />
+  </action>
 </keymap>
