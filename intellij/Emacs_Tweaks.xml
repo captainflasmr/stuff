@@ -7,7 +7,6 @@
     <keyboard-shortcut first-keystroke="alt o" />
   </action>
   <action id="ActivateCommitToolWindow">
-    <keyboard-shortcut first-keystroke="alt 0" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="g" />
   </action>
   <action id="ActivateDebugToolWindow">
@@ -51,6 +50,7 @@
   <action id="ChooseDebugConfiguration">
     <keyboard-shortcut first-keystroke="f5" />
   </action>
+  <action id="ClassNameCompletion" />
   <action id="CloseContent">
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="0" />
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="k" />
@@ -112,6 +112,10 @@
   <action id="GotoSymbol">
     <keyboard-shortcut first-keystroke="alt g" second-keystroke="i" />
   </action>
+  <action id="HideAllWindows">
+    <keyboard-shortcut first-keystroke="shift ctrl f12" />
+    <keyboard-shortcut first-keystroke="ctrl alt space" />
+  </action>
   <action id="Macro.ScrollDown5">
     <keyboard-shortcut first-keystroke="alt j" />
   </action>
@@ -124,10 +128,8 @@
   </action>
   <action id="NextTab">
     <keyboard-shortcut first-keystroke="alt i" />
-    <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="l" />
   </action>
   <action id="PreviousTab">
-    <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="h" />
     <keyboard-shortcut first-keystroke="alt u" />
   </action>
   <action id="QuickChangeScheme">
@@ -144,14 +146,6 @@
   <action id="ShowBookmarks">
     <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="l" />
   </action>
-  <action id="SplitHorizontally">
-    <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="s" />
-    <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="2" />
-  </action>
-  <action id="SplitVertically">
-    <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="v" />
-    <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="3" />
-  </action>
   <action id="StepInto">
     <keyboard-shortcut first-keystroke="f11" />
   </action>
@@ -167,9 +161,5 @@
   </action>
   <action id="ToggleLineBreakpoint">
     <keyboard-shortcut first-keystroke="f9" />
-  </action>
-  <action id="UnsplitAll">
-    <keyboard-shortcut first-keystroke="ctrl w" second-keystroke="o" />
-    <keyboard-shortcut first-keystroke="ctrl x" second-keystroke="1" />
   </action>
 </keymap>

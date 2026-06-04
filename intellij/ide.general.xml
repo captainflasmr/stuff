@@ -8,5 +8,10 @@
     <entry key="ide.experimental.ui" value="true" source="SYSTEM" />
     <entry key="actionSystem.playback.typecommand.delay" value="0" source="USER" />
     <entry key="actionSystem.playback.delay" value="0" source="USER" />
+    <entry key="ide.balloon.shadow.size" value="0" source="SYSTEM" />
+    <entry key="ide.editor.tab.selection.animation" value="true" source="SYSTEM" />
+    <entry key="ide.new.editor.tabs.vertical.borders" value="true" source="SYSTEM" />
+    <entry key="ide.colorful.toolbar.gradient.radius" value="2000" source="SYSTEM" />
+    <entry key="new.search.everywhere.font.size.delta" value="4" source="SYSTEM" />
   </component>
 </application>
