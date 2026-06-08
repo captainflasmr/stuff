@@ -1,0 +1,72 @@
+#+title: Log 2023
+#+startup: align shrink
+
+* 2023 Log
+
+|   |    |       Date | Monday                       | Tuesday                      | Wednesday                      | Thursday                  | Friday               |   |    |  7 |
+|---+----+------------+------------------------------+------------------------------+--------------------------------+---------------------------+----------------------+---+----+----|
+|   |    |            | <20>                         | <20>                         | <20>                           | <20>                      | <20>                 | 0 |  0 | 27 |
+| Y |  1 | 2023-01-02 | BH Done                      | Emacs base image             | Emacs base image               | Emacs base image          |                      | 0 |  0 | 27 |
+| Y |  2 | 2023-01-09 | FLEX                         | Holiday PT                   | Holiday PT                     | Holiday PT                |                      | 3 |  3 | 24 |
+| Y |  3 | 2023-01-16 | Unmanned CSOT / TH Final     | Unmanned CSOT / TH Final     | Unmanned CSOT / TH Final       | TH Final                  |                      | 0 |  3 | 24 |
+| Y |  4 | 2023-01-23 | Test Harness Review          | Test Harness Review          | Test Harness Review            | FLEX                      |                      | 0 |  3 | 24 |
+| Y |  5 | 2023-01-30 | Holiday PT                   | No pitch licenses            | Test Harness Review            | Test Harness Review       |                      | 1 |  4 | 23 |
+| Y |  6 | 2023-02-06 | Holiday PT                   | Test Harness Review          | Test Harness Review            | Test Harness Review       |                      | 1 |  5 | 22 |
+| Y |  7 | 2023-02-13 | Combat systems TH fix        | Combat systems TH fix        | Combat systems TH fix          | Combat systems TH fix     |                      | 0 |  5 | 22 |
+| Y |  8 | 2023-02-20 | FLEX                         | Final TH bits                | Final TH bits                  | Final TH bits             |                      | 0 |  5 | 22 |
+| Y |  9 | 2023-02-27 | Compassionate Leave          | New isos / AIS               | New isos / AIS                 | Compassionate Leave       |                      | 0 |  5 | 22 |
+| Y | 10 | 2023-03-06 | AIS                          | AIS                          | AIS finished                   | FLEX                      |                      | 0 |  5 | 22 |
+| Y | 11 | 2023-03-13 | Clean Legacy build           | Clean legacy build           | Compassionate Leave            | Compassionate Leave       |                      | 0 |  5 | 22 |
+| Y | 12 | 2023-03-20 | Active Sonars                | Active Sonars / Flex         | Active Sonars                  | Active Sonars             |                      | 0 |  5 | 22 |
+| Y | 13 | 2023-03-27 | Active Sonars                | Active Sonars / Flex         | Active Sonars                  | Active Sonars             |                      | 0 |  5 | 22 |
+| Y | 14 | 2023-04-03 | Holiday PT                   | Active Sonars                | Active Sonars                  | Active Sonars             |                      | 1 |  6 | 21 |
+| Y | 15 | 2023-04-10 | BH Done                      | Holiday PT                   | Holiday PT                     | Holiday PT                |                      | 3 |  9 | 18 |
+| Y | 16 | 2023-04-17 | PV Ors                       | reformatting source code     | PV Ors                         | PV Ors                    |                      | 0 |  9 | 18 |
+| Y | 17 | 2023-04-24 | Reformatting MSC             | Reformatting MSC             | Reformatting MSC               | Reformatting MSC          |                      | 0 |  9 | 18 |
+| Y | 18 | 2023-05-01 | BH Done                      | reformatting MSC             | Reformatting MSC               | Reformatting MSC          |                      | 0 |  9 | 18 |
+| Y | 19 | 2023-05-08 | BH Done                      | reformatting msc             | Reformatting MSC               | Reformatting MSC          |                      | 0 |  9 | 18 |
+| Y | 20 | 2023-05-15 | warnings reduction msc       | warnings reduction msc       | warnings reduction msc         | warnings reduction msc    |                      | 0 |  9 | 18 |
+| Y | 21 | 2023-05-22 | FLEX                         | warnings reduction msc       | windows build improvement      | windows build improvement |                      | 0 |  9 | 18 |
+| Y | 22 | 2023-05-29 | BH Done                      | warnings reduction msc       | FLEX                           | warnings reduction msc    |                      | 0 |  9 | 18 |
+| Y | 23 | 2023-06-05 | warnings reduction msc       | warnings reduction msc       | Reformatting MSC               | Sick                      |                      | 0 |  9 | 18 |
+| Y | 24 | 2023-06-12 | FLEX                         | `                            | Holiday PT                     | Holiday PT                |                      | 2 | 11 | 16 |
+| Y | 25 | 2023-06-19 | updating svn windows scripts | Updating svn windows scripts | fixing MSC Ors                 | fixing MSC Ors            |                      | 0 | 11 | 16 |
+| Y | 26 | 2023-06-26 | Fixing MSC Ors               | Fixing MSC Ors               | Fixing MSC ORs                 | fixing MSC Ors            |                      | 0 | 11 | 16 |
+| Y | 27 | 2023-07-03 | Fixing MSC ORs               | Fixing MSC ORs               | Fixing MSC ORs                 | Fixing MSC Ors / TCR      |                      | 0 | 11 | 16 |
+| Y | 28 | 2023-07-10 | Fixing MSC ORs               | Fixing MSC ORs               | Fixing MSC ORs                 | Fixing MSC Ors            |                      | 0 | 11 | 16 |
+| Y | 29 | 2023-07-17 | Fixing Game MSC              | Fixing Game MSC              | Fixing Game MSC                | Fixing Game MSC           |                      | 0 | 11 | 16 |
+| Y | 30 | 2023-07-24 | Fixing Game MSC              | Fixing Game MSC              | Fixing Game MSC                | WFH                       |                      | 0 | 11 | 16 |
+| Y | 31 | 2023-07-31 | MSC stream_io                | MSC stream_io                | MSC stream_io                  | MSC stream_io / estimates |                      | 0 | 11 | 16 |
+| Y | 32 | 2023-08-07 | MSC checking in stream_io    | MSC OR polar in idle         | MSC OR polar in idle           | MSC OR polar in idle      |                      | 0 | 11 | 16 |
+| Y | 33 | 2023-08-14 | MSC OR polar mode in idle    | MSC OR polar in idle         | MSC OR polar in idle           | STE estimates             | Kate Op              | 0 | 11 | 16 |
+| Y | 34 | 2023-08-21 | FLEX                         | Holiday PT                   | Holiday PT                     | Holiday PT                |                      | 3 | 14 | 13 |
+| Y | 35 | 2023-08-28 | BH                           | MSC eglot / asrap            | MSC eglot / asrap              | FLEX                      |                      | 0 | 14 | 13 |
+| Y | 36 | 2023-09-04 | MSC asrap                    | MSC asrap                    | MSC asrap / FLEX               | MSC asrap                 |                      | 0 | 14 | 13 |
+| Y | 37 | 2023-09-11 | MSC asrap                    | MSC asrap                    | MSC asrap                      | Andy slide review         |                      | 0 | 14 | 13 |
+| Y | 38 | 2023-09-18 | MSC asrap                    | MSC asrap                    | MSC asrap                      | MSC asrap working!        |                      | 0 | 14 | 13 |
+| Y | 39 | 2023-09-25 | MSC asrap tidy               | MSC asrap tidy / FLEX        | MSC asrap tidy                 | MSC asrap tidy            |                      | 0 | 14 | 13 |
+| Y | 40 | 2023-10-02 | Preparing Jira sprint        | Fixing asrap issue           | MSC database issues            | MSC database issues       |                      | 0 | 14 | 13 |
+| Y | 41 | 2023-10-09 | MSC database issues          | MSC database issues          | MSC database issues            | MSC database issues       |                      | 0 | 14 | 13 |
+| Y | 42 | 2023-10-16 | FLEX                         | Holiday PT                   | Holiday PT                     | Holiday PT                |                      | 3 | 17 | 10 |
+| Y | 43 | 2023-10-23 | dbdbv DB permissions         | dbdbv DB permissions         | dbdbv DB permissions           | dbdbv DB permissions      | dbdbv DB permissions | 0 | 17 | 10 |
+| Y | 44 | 2023-10-30 | dbdbv DB permissions         | dbdbv DB permissions         | Holiday PT                     | dbdbv DB permissions      | code reformat script | 1 | 18 |  9 |
+| Y | 45 | 2023-11-06 | MSC AIS                      | Sick                         | MSC AIS                        | WFH / FLEX                | FLEX                 | 0 | 18 |  9 |
+| Y | 46 | 2023-11-13 | MSC VSCode                   | MSC VSCode                   | MSC VSCode                     | MSC VSCode                | WFH Jira             | 0 | 18 |  9 |
+| Y | 47 | 2023-11-20 | WFH Wiki porting             | WFH Wiki Porting             | Bldg1 setup / WFH Wiki Porting | WFH MSC repo merge        | WFH MSC repo merge   | 0 | 18 |  9 |
+| Y | 48 | 2023-11-27 | PV setup / WFH Wiki Porting  | WFH Wiki Porting             | Wiki Porting / WFH             | FLEX                      | WFH                  | 0 | 18 |  9 |
+| Y | 49 | 2023-12-04 | MSC repo merge prep          | MSC repo merge prep          | MSC repo merge prep            | MSC repo merge prep       | WFH MSC repo merge   | 0 | 18 |  9 |
+| Y | 50 | 2023-12-11 | MSC repo Peri Batch review   | Jira tickets                 | Jira tickets                   | Jira tickets              | FLEX                 | 0 | 18 |  9 |
+| Y | 51 | 2023-12-18 | Jira tickets                 | Jira tickets                 | Jira tickets                   | WFH Jira tickets          | Holiday PT           | 1 | 19 |  8 |
+| Y | 52 | 2023-12-25 | BH                           | BH                           | Planned                        | Planned                   | Holiday PT           | 1 | 20 |  7 |
+| Y | 53 | 2024-01-01 | BH                           |                              |                                |                           |                      | 0 | 20 |  7 |
+#+TBLFM: $2=@#-2::@2$2=string("")::$9='(length (seq-filter (lambda (x) (let ((s (downcase (format "%s" x)))) (and (string-match-p "holiday" s) (not (string-match-p "bank" s)) (not (string-match-p "flex" s))))) (list $4 $5 $6 $7 $8)))::$10='(length (seq-filter (lambda (x) (let ((s (downcase (format "%s" x)))) (and (string-match-p "holiday" s) (not (string-match-p "bank" s)) (not (string-match-p "flex" s))))) (list @<$4..@$8)))::$11=27-$10::@1$11=@>$11
+
+# Local Variables:
+# mode: org
+# eval: (highlight-regexp "FLEX" (let ((f 'log-flex)) (face-spec-set f '((t :background "#b3d9ff" :foreground "black"))) f))
+# eval: (highlight-regexp "Holiday" (let ((f 'log-holiday)) (face-spec-set f '((t :background "#ffc0cb" :foreground "black"))) f))
+# eval: (highlight-regexp "Bank Holiday" (let ((f 'log-bank-holiday)) (face-spec-set f '((t :background "#a0e0d0" :foreground "black"))) f))
+# eval: (highlight-regexp "Cutoff" (let ((f 'log-cutoff)) (face-spec-set f '((t :background "#fff2a8" :foreground "black"))) f))
+# eval: (highlight-regexp "Sick" (let ((f 'log-sick)) (face-spec-set f '((t :background "#ffd9a8" :foreground "black"))) f))
+# eval: (visual-line-mode -1)
+# End:
