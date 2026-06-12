@@ -1,0 +1,631 @@
+#+TITLE: HLA Object Model, the FOM, the Protobuf Contract, and the Mock-Mode Hacks
+#+AUTHOR: James Dyer
+#+DATE: 2026-06-12
+#+STARTUP: overview
+#+OPTIONS: toc:3 num:t
+
+* Overview
+
+This document captures a walkthrough of how the HLA (High Level Architecture)
+object model works, what the FOM file does, how publish/subscribe and
+interactions operate, and how all of that maps onto the FedProClient /
+CUIS-server codebase. It then drills into the CUIS protobuf contract and the
+specific tricks used to make a pure gRPC client behave like a "proper federate"
+against the in-process mock RTI.
+
+Concrete anchors used throughout:
+- FOM: =java/cuis-server/CuisFom.xml=
+- Mock RTI: =java/cuis-server/src/se/pitch/oss/fedpro/cuis/server/rti/mock/MockRTIambassador.java=
+- RTI adapter: =java/cuis-server/src/se/pitch/oss/fedpro/cuis/server/rti/RtiAdapter.java=
+- gRPC service impl: =java/cuis-server/src/se/pitch/oss/fedpro/cuis/server/grpc/UFCommonUIServiceImpl.java=
+- Proto contract: =java/cuis-proto/proto/common_user_interface_server/=
+- Real federate publisher: =.../tools/publisher/CuisHlaPublisher.java=
+- gRPC (mock) publisher: =.../tools/publisher/CuisGrpcPublisher.java=
+
+* The big picture: what HLA actually is
+
+HLA (IEEE 1516) is a standard for *distributed simulation*. Many independent
+simulators -- called *federates* -- need to share state and events in real time.
+A tank sim, a radar sim, a weather model, a 3D viewer: each is a separate
+program, possibly on a separate machine, possibly from a different vendor.
+Together they form a *federation*.
+
+The thing in the middle is the *RTI* (Run-Time Infrastructure) -- a specialised
+message bus / database for simulations. No federate talks to another federate
+directly; they all talk to the RTI, and the RTI routes data to whoever asked
+for it.
+
+#+begin_example
+  Federate A ----\                    /---- Federate C
+                  >---  [  RTI  ]  ---<
+  Federate B ----/                    \---- Federate D
+#+end_example
+
+** The two ambassadors
+
+Each federate talks to the RTI through an *RTIambassador* -- the federate's
+"phone line" to the RTI. The federate *calls methods on* the RTIambassador
+("publish this", "send that", "update these values"). The RTI calls *back into*
+the federate through a *FederateAmbassador* -- a callback interface the federate
+implements ("here's new data for you", "someone sent you an interaction").
+
+- *RTIambassador* = federate -> RTI (you call it)
+- *FederateAmbassador* = RTI -> federate (it calls you)
+
+** Where FedProClient fits
+
+FedProClient does *not* implement an RTI. It implements the *client side* -- the
+RTIambassador and plumbing -- for the *HLA 4 Federate Protocol* (IEEE
+1516-2025). Normally a federate links against a vendor's local RTI component
+(LRC) library that talks a proprietary wire protocol. The Federate Protocol
+replaces that with a standardised network protocol so a federate can reach a
+remote "Federate Protocol Server" (fronting a real RTI like Pitch pRTI). The
+README's "ABI compatible ... drop-in replacement" line is exactly this: same
+RTIambassador API, different transport underneath.
+
+* The object model: the shared vocabulary
+
+For federates to share data, they must first agree on *what data exists and what
+it is called*. That agreement is the *object model*, written down in the *FOM*
+(Federation Object Model).
+
+The FOM is a contract. It says: "In this federation there is a thing called a
+=Vehicle=. A Vehicle has a =Position= and a =Speed=. There is also an event
+called an =Alert= that carries a =Message= and a =Severity=." That is literally
+what =CuisFom.xml= declares.
+
+The object model has *two fundamentally different kinds of things*.
+
+** Object classes (persistent state)
+
+An *object class* describes a thing that exists over time and has state that
+changes. A Vehicle persists -- created, drives around (Position keeps updating),
+eventually deleted. The RTI tracks it as a live *object instance*.
+
+#+begin_src xml
+<objectClass>
+    <name>Vehicle</name>
+    <attribute><name>Position</name> ... </attribute>
+    <attribute><name>Speed</name> ... </attribute>
+</objectClass>
+#+end_src
+
+The properties of an object are called *attributes*.
+
+** Interaction classes (transient events)
+
+An *interaction* is a fire-and-forget event. No persistent state, no lifetime.
+It happens, it is delivered, it is gone. "An alert was raised" is an event.
+
+#+begin_src xml
+<interactionClass>
+    <name>Alert</name>
+    <parameter><name>Message</name> ... </parameter>
+    <parameter><name>Severity</name> ... </parameter>
+</interactionClass>
+#+end_src
+
+The data carried by an interaction is called *parameters* (a deliberately
+different word from "attributes" to keep the two concepts straight).
+
+** Objects vs interactions at a glance
+
+| Object class                       | Interaction class            |
+|------------------------------------+------------------------------|
+| Persistent entity                  | Transient event              |
+| Has *attributes*                   | Has *parameters*             |
+| Created / updated / deleted        | Sent once                    |
+| =updateAttributeValues()=          | =sendInteraction()=          |
+| RTI tracks instances + state       | RTI just routes the message  |
+| Like a row in a live database      | Like an event / message      |
+
+A *"send interaction"* is a federate firing one of these event messages into the
+federation: fill in the parameters (=Message = "Engine overheating"=, =Severity
+= 3=) and call =sendInteraction()=. The RTI delivers it to every federate
+subscribed to =Alert=.
+
+* Publish and subscribe: how data actually flows
+
+Declaring things in the FOM is not enough. A federate must announce its
+intentions at runtime. This is HLA *Declaration Management*.
+
+- *Publish* = "I am a producer of this." e.g.
+  =publishObjectClassAttributes(Vehicle, {Position, Speed})=, or
+  =publishInteractionClass(Alert)=.
+- *Subscribe* = "I am a consumer of this; send me updates." e.g.
+  =subscribeObjectClassAttributes(Vehicle, {Position})=, or
+  =subscribeInteractionClass(Alert)=.
+
+The RTI matches publishers to subscribers. A publisher has *no idea* who is
+listening; a subscriber has no idea who is producing. Total decoupling: add a
+new viewer that subscribes to Vehicle positions and the tank sim never changes.
+
+In =CuisFom.xml= every class has =<sharing>PublishSubscribe</sharing>=. The
+=sharing= element declares what a class is *allowed* to do: =Publish=,
+=Subscribe=, =PublishSubscribe= (both), or =Neither=.
+
+** The full object cycle (publish -> update -> reflect)
+
+1. Producer: =publishObjectClassAttributes(Vehicle, {Position, Speed})=
+2. Producer: =registerObjectInstance(Vehicle)= -> RTI returns a unique handle.
+3. Consumer: =subscribeObjectClassAttributes(Vehicle, {Position})=
+4. Consumer gets a =discoverObjectInstance= *callback* ("a new Vehicle
+   appeared").
+5. Producer: =updateAttributeValues(handle, {Position: bytes})= whenever it
+   moves.
+6. Consumer gets a =reflectAttributeValues= *callback* with the new Position.
+   ("Reflect" = receiving an update; "update" = sending one.)
+7. Producer: =deleteObjectInstance(handle)= -> consumer gets
+   =removeObjectInstance=.
+
+** The interaction cycle (send -> receive), much simpler
+
+1. Producer: =publishInteractionClass(Alert)=
+2. Consumer: =subscribeInteractionClass(Alert)=
+3. Producer: =sendInteraction(Alert, {Message, Severity})=
+4. Consumer gets a =receiveInteraction= callback. Done.
+
+The =Chat= sample is the canonical tiny demo of this; =AsyncChat= is the same
+but =sendInteraction()= returns a =CompletableFuture= instead of blocking.
+
+* Who creates the FOM and who owns what
+
+- *The FOM is authored by the federation designer* -- a human/team, usually
+  before any code runs. It is a design artifact, typically produced in a
+  FOM-editing tool and saved as XML. Vendors ship a base set (the
+  =HLAobjectRoot= / =HLAinteractionRoot= roots and the MOM -- Management Object
+  Model -- classes) which you extend with domain classes. The
+  =<modelIdentification>= block in =CuisFom.xml= is the metadata for this
+  authoring step.
+- *The RTI does not create the FOM.* At federation start a federate calls
+  =createFederationExecution(name, FOM-modules)= and *hands the FOM to the RTI*.
+  The RTI reads it and now knows the legal vocabulary. After that every
+  publish/subscribe/register call is checked against the FOM.
+- *Federates then join* with =joinFederationExecution()= and do their
+  publish/subscribe declarations at runtime.
+
+So: humans author the FOM -> a federate gives it to the RTI at creation -> the
+RTI enforces it -> federates publish/subscribe within its bounds.
+
+** FOM modules in this project
+
+HLA 4 calls the pieces *FOM modules* and lets the FOM be split into modular
+parts that different federates each contribute; the RTI merges them. The client
+library has matching machinery:
+- =cpp/src/fedpro/services-common/FomModule.*=, =FomModuleLoader.*=,
+  =FomModuleSet.*=
+- =java/.../fedpro/FomModule.java=, =FileFomModule.java= (a FOM passed by file
+  reference)
+- Standard failure modes as exceptions: =CouldNotOpenFOM=, =ErrorReadingFOM=,
+  =InconsistentFOM= in =java/api/.../exceptions/=.
+
+* The "different types of attributes" -- decoding the FOM fields
+
+Using the =Position= attribute from =CuisFom.xml=:
+
+#+begin_src xml
+<attribute>
+    <name>Position</name>
+    <dataType>HLAfloat64BE</dataType>      <!-- wire encoding -->
+    <updateType>Conditional</updateType>    <!-- when it gets updated -->
+    <updateCondition>On change</updateCondition>
+    <valueRequired>false</valueRequired>
+    <ownership>NoTransfer</ownership>       <!-- can ownership move? -->
+    <sharing>PublishSubscribe</sharing>     <!-- publish / subscribe / both -->
+    <transportation>HLAreliable</transportation>  <!-- delivery guarantee -->
+    <order>Receive</order>                  <!-- ordering policy -->
+</attribute>
+#+end_src
+
+Fields that genuinely change behaviour:
+
+- *dataType* -- the portable encoding. =HLAfloat64BE= = 64-bit IEEE float,
+  big-endian; =HLAinteger32BE= = 32-bit int; =HLAunicodeString= = text. These
+  are HLA's standard types so a C++ and a Java federate agree on the exact
+  bytes.
+- *transportation* -- =HLAreliable= (TCP-like, guaranteed, ordered, slower) vs
+  =HLAbestEffort= (UDP-like, may drop; used for high-rate data like positions).
+- *order* -- =Receive= (deliver as soon as it arrives) vs =TimeStamp= (deliver
+  in simulation-time order, the basis of HLA time management).
+- *ownership* -- attribute ownership can transfer between federates at runtime;
+  =NoTransfer= disables that.
+- *updateType / updateCondition* -- advisory metadata on *when* the owner is
+  expected to push updates (=Conditional= / =On change=). Not enforced.
+- *valueRequired* -- whether a subscriber needs this value to function.
+
+Interaction *parameters* are simpler -- just =name=, =dataType=, =semantics=.
+The interaction *class itself* carries =transportation= and =order=.
+
+*Inheritance:* classes form a hierarchy. Everything descends from
+=HLAobjectRoot= (objects) or =HLAinteractionRoot= (interactions) -- you can see
+Vehicle nested inside =HLAobjectRoot= and Alert inside =HLAinteractionRoot= in
+the XML. A subclass inherits its parent's attributes/parameters; subscribing to
+a parent also gets subclass instances. The FOM's own description warns that a
+real RTI may require the *fully-qualified* name =HLAobjectRoot.Vehicle= where
+the mock accepted bare =Vehicle=.
+
+* How the FOM relates to this project (CUIS migration)
+
+The *CUIS proxy federate* currently runs against a *MockRTIambassador* -- an
+in-memory fake RTI (no network, no real federation). The project goal is to move
+it onto a real *Pitch pRTI 6.1.3* via the *Federate Protocol* -- i.e. using
+FedProClient as the RTIambassador, talking to a Federate Protocol Server that
+fronts pRTI.
+
+=CuisFom.xml= is the bridge for that migration. Its own =<description>= says it:
+declare exactly the classes the mock used to fabricate (=Vehicle=, =Alert=), so
+that when you switch to a real RTI you hand it this FOM and the real RTI
+recognises the same name lookups the mock satisfied out of thin air. It is
+intentionally minimal -- a "starter FOM" -- to be extended with the real CUIS
+object model later.
+
+Target end-to-end flow:
+1. CUIS proxy federate starts, uses FedProClient's RTIambassador (not the mock).
+2. Connects to the Federate Protocol Server -> real pRTI.
+3. =createFederationExecution= / =joinFederationExecution=, handing over
+   =CuisFom.xml= as a FOM module (the =FomModuleLoader= / =FileFomModule= path).
+4. Publishes =Vehicle= attributes and the =Alert= interaction; subscribes to
+   what it needs.
+5. Sub-apps register Vehicle instances, push Position/Speed, and fire =Alert= --
+   now flowing through a real RTI to real other federates.
+
+* Does only the real RTI accept a FOM file?
+
+Essentially yes -- more precisely, only the real RTI *reads and enforces* it.
+
+** The mock ignores the FOM entirely
+
+All three =createFederationExecution= overloads in =MockRTIambassador= are
+=// No-op=:
+
+#+begin_src java
+public void createFederationExecution(String federationName, String fomModule)
+      throws InconsistentFOM, InvalidFOM, ErrorReadingFOM, CouldNotOpenFOM, ...
+{
+   // No-op
+}
+#+end_src
+
+The mock never opens, parses, or validates =CuisFom.xml=. It declares the
+standard exceptions to match the interface signature, but never throws them. A
+*real* RTI is where those come alive (a malformed/contradictory FOM is rejected
+there).
+
+** Where the mock's classes come from -- two paths, neither is the FOM
+
+1. *Explicit pre-registration (programmatic, not command-line).* Methods exist:
+   #+begin_src java
+   public void preRegisterObjectClass(String className, String... attributeNames)
+   public void preRegisterInteractionClass(String className, String... parameterNames)
+   #+end_src
+   Callers live only in *test/demo* harnesses (=CuisDemo.java=,
+   =CuisEndToEndTest.java=, =CuisGrpcuiServer.java=, =SubAppIntegrationTest.java=),
+   not in production =cuis-server= startup. So "hard-coded" is accurate: a test
+   says, in Java, "pretend =Vehicle= exists with =Position=, =Speed=."
+
+2. *Lazy auto-registration ("lenient mock").* Even with zero pre-registration,
+   the mock fabricates classes on first reference:
+   #+begin_src java
+   // Lenient mock: auto-register any unknown name so the bundled demo
+   // "just works" against any FOM with no pre-registration or FOM parsing.
+   _objectClassHandles.put(objectClassName, handle);
+   #+end_src
+   Same trick in =getAttributeHandle=, =getInteractionClassHandle=,
+   =getParameterHandle=. *Any* name a federate asks for is silently accepted.
+
+** Why this is exactly the migration hazard
+
+The mock validates nothing, so it cannot tell you you are wrong:
+- Ask for =Vehicle= -> invented, succeeds.
+- Ask for =HLAobjectRoot.Vehicle= -> also invented, also succeeds.
+- Ask for =Banana= -> invented, succeeds too.
+
+The real RTI does the opposite: it only knows the names in the FOM you handed to
+=createFederationExecution=, and demands they be correct -- likely the
+fully-qualified =HLAobjectRoot.Vehicle=. Code that "works" against the mock can
+fail the instant it hits pRTI with a =NameNotFound=-type error, even though
+nothing in the federate code changed. That is the whole reason =CuisFom.xml=
+exists as a deliverable.
+
+* The CUIS protobuf contract
+
+Two *services*, mirroring the two HLA ambassadors. This pairing is the key to
+reading the whole contract:
+
+| Proto service                            | Mirrors          | Direction          | Role                                       |
+|------------------------------------------+------------------+--------------------+--------------------------------------------|
+| =UFCommonUIService= (server proto)       | RTIambassador    | Sub-App -> server  | Calls the federate *makes*                 |
+| =UFCommonUIClientService= (client proto) | FederateAmbassador| server -> Sub-App  | Callbacks the federate *receives*          |
+
+The =(x.y)= numbers in the comments reference *IEEE 1516.1* (the HLA Federate
+Interface Specification). CUIS is essentially "HLA-over-gRPC for web Sub-Apps."
+
+** Shared building blocks
+
+*** success.proto -> Success
+
+The universal response envelope; every response embeds one.
+
+#+begin_src protobuf
+message Success { bool successful = 1; int32 error_code = 2; string error_text = 3; }
+#+end_src
+
+Errors are returned *in-band* as data (=response.setSuccessful(error(e))= in the
+impl), not as gRPC status errors. =successful=true= => other fields are 0/empty.
+
+*** hla_common.proto -- the data vocabulary
+
+- *=Attributes { string name }=* -- an attribute *name* only (subscribe,
+  unpublish, request-update lists).
+- *=Attribute_Values { string name; Data_Value value }=* -- name plus value
+  (update, reflect).
+- *=Parameter_Values { string name; Data_Value value }=* -- identical shape, but
+  for *interaction parameters*; kept distinct to honour the attribute vs
+  parameter distinction.
+- *=Data_Value=* -- a =oneof= over the 14 wire types; the gRPC analogue of HLA's
+  encoding helpers (IEEE 12.11.3.2 Java / 12.12.4.2 C++). "All other types
+  should derive down to one of these."
+
+#+begin_src protobuf
+oneof dv {
+  int32  hla_octet      = 1;   // HLAoctet (byte)
+  int32  hla_int16      = 2;   // HLAinteger16BE/LE
+  int32  hla_int32      = 3;   // HLAinteger32BE  <- Alert.Severity
+  int64  hla_int64      = 4;   // HLAinteger64BE
+  float  hla_float32    = 5;   // HLAfloat32BE
+  double hla_float64    = 6;   // HLAfloat64BE    <- Vehicle.Position / Speed
+  string hla_ascii_char = 7;
+  string hla_unicode_char = 8;
+  bytes  hla_handle     = 9;   // an encoded RTI handle as a value
+  google.protobuf.Timestamp time = 10;     // HLA logical time
+  google.protobuf.Duration duration = 11;  // HLA logical time interval
+  string hla_ascii_string   = 12;
+  string hla_unicode_string = 13;          // HLAunicodeString <- Alert.Message
+  bytes  hla_opaque_data    = 14;          // catch-all / pre-encoded blob
+}
+#+end_src
+
+Endianness is "specified during the registration" -- hence =RegisterRequest=
+carries =little_endian=. The =oneof= lets a Sub-App send a typed =double= and
+the server pick the right HLA encoder, instead of every client re-implementing
+=HLAfloat64BE= byte packing.
+
+** UFCommonUIService (the RTIambassador-facing service)
+
+*** Client registration (CUIS session management, no HLA equivalent)
+
+- *=Register_Client=* -- a Sub-App announces itself. =RegisterRequest= gives
+  =client_addr= + =client_port_number= (where the server calls *back* into this
+  Sub-App's client service) and =little_endian=. Returns a =Client_Id= used to
+  authenticate every later call (=requireClient(...)=). gRPC stand-in for
+  =connect= / =joinFederationExecution=, which the contract hides.
+- *=Remove_Client=* -- de-register; the CUIS analogue of resign.
+
+*** Object class methods (each maps to a numbered RTIambassador service)
+
+- *=Publish_Object_Attributes= (5.2)* -- "I can supply these attributes."
+  =PublishObjectRequest= carries =name= + =repeated Attribute_Values=. Response
+  returns =object_handle= = the *class* handle (impl copies =classHandle=). Maps
+  to =publishObjectClassAttributes=.
+- *=Unpublish_Object= (5.3)* -- stop publishing; empty =attr_list= => whole
+  class.
+- *=Subscribe_Object_Attributes= (5.6)* -- "send me updates." Optional
+  =update_rate_reduction= (5.1.6) for throttling. Maps to
+  =subscribeObjectClassAttributes=. This is what the CUIS server itself calls.
+- *=Unsubscribe_Object= (5.7)* -- the inverse.
+- *=Update_Attribute_Values= (6.10)* -- push new values. *Requires*
+  =instance_handle= ("obtained via (6.9) in the client service"), plus
+  =attr_val_list=, =user_supplied_tag=, optional =time=. Maps to
+  =updateAttributeValues=. This is the RPC at the centre of the object-creation
+  gap.
+- *=Request_Attribute_Value_Update= (6.19)* -- ask publishers to re-send. =oneof
+  scope= targets either a whole class by =object_name= or one =instance_handle=.
+
+*** Interaction class methods (no instance handle -- fully usable from a Sub-App)
+
+- *=Publish_Interaction= (5.4)* / *=Unpublish_Interaction= (5.5)* -- declare /
+  undeclare ability to send an interaction class by =name=.
+- *=Subscribe_Interaction= (5.8)* / *=Unsubscribe_Interaction= (5.9)* --
+  register / deregister interest.
+- *=Send_Interaction= (6.12)* -- fire one. =name= + =repeated Parameter_Values= +
+  =user_supplied_tag= + optional =time=. Maps to =sendInteraction=. No instance
+  involved, so a Sub-App can do this end-to-end with no external federate.
+
+** UFCommonUIClientService (the FederateAmbassador-facing callbacks)
+
+Runs *inside the Sub-App*; the CUIS server is the caller.
+
+*** Object callbacks
+
+- *=Discover_Object_Instance= (6.9)* -- "a new instance appeared."
+  =instance_handle=, =object_handle= (class), =object_name=. *The only place a
+  Sub-App ever obtains an =instance_handle=.*
+- *=Reflect_Attribute_Values= (6.11)* -- "new values for an instance you
+  subscribed to." =instance_handle= + =attr_val_list= + tag + optional =time=.
+- *=Remove_Object_Instance= (6.15)* -- "that instance was deleted."
+- *=Provide_Attribute_Value_Update= (6.20)* -- "please re-send values for these
+  attributes you publish." The Sub-App responds by calling
+  =Update_Attribute_Values= (6.10) back on the server. Counterpart of
+  =Request_Attribute_Value_Update=.
+
+*** Interaction callback
+
+- *=Receive_Interaction= (6.13)* -- "an interaction you subscribed to arrived."
+  =name= + =param_val_list= + tag + optional =time=. The receiving end of
+  =Send_Interaction=. Carries no client id and no instance -- a pure broadcast
+  event.
+
+* Why objects cannot be created through the proto interface
+
+Both proto files state it explicitly at the top:
+
+#+begin_example
+// The service excludes:
+//   Object creation/deletion
+//   Object Ownership
+//   Time Management
+//   Data distribution (regions)
+#+end_example
+
+Reasoning (architectural, not a protobuf limitation):
+
+- *CUIS Sub-Apps are UI consumers, not entity owners.* The lifecycle of a
+  simulated entity belongs to an authoritative simulation federate. CUIS
+  reserves instance creation/deletion for that role and only lets Sub-Apps
+  *reflect* what exists and *update attribute values* on instances that flow in.
+- *Instance handles are RTI-issued and identity-laden.* =registerObjectInstance=
+  creates a federation-wide identity with ownership semantics. Exposing that
+  through a thin gRPC proxy to many short-lived web clients would force the proxy
+  to manage ownership, deletion authority, and resignation cleanup -- exactly the
+  concerns the contract drops to stay simple.
+- *The asymmetry is intentional:* the server service lets a client publish a
+  class and push values, but instance creation is surfaced only as an inbound
+  *discovery callback* on the client service. Creation happens *to* a Sub-App,
+  never something it initiates.
+
+The cost of that choice is the testing gap below.
+
+* The testing gap and the two publishers
+
+To exercise the object attribute round trip (=discover= then =reflect=),
+*somebody* must call =registerObjectInstance=. No =Register_Object_Instance= RPC
+exists, and =Update_Attribute_Values= requires an =instance_handle= that only
+arrives via =Discover_Object_Instance=. So a pure Sub-App cannot originate an
+instance. Two tools fill the gap differently.
+
+** CuisHlaPublisher -- a genuine second federate (real RTI)
+
+Bypasses the CUIS gRPC contract entirely and talks raw HLA. Imports
+=hla.rti1516_2025.RTIambassador=,
+=RtiFactoryFactory.getRtiFactory("Federate Protocol")=. It does the standard
+sequence the contract forbids a Sub-App from doing:
+
+1. =getObjectClassHandle("Vehicle")=
+2. =publishObjectClassAttributes(class, {Position, Speed})=
+3. =registerObjectInstance(class)= -> =ObjectInstanceHandle=
+4. =updateAttributeValues(instanceHandle, values, tag)= on a timer, encoding
+   values itself: =encoder.createHLAfloat64BE(position).toByteArray()=.
+
+The CUIS server, as a *subscriber* federate, then receives
+=discoverObjectInstance= -> =reflectAttributeValues= and forwards them to the
+real Sub-App via the client service. It "counts as the second federate your
+licence permits."
+
+** CuisGrpcPublisher -- a plain gRPC Sub-App (mock mode)
+
+Same job, but joins *no* RTI, needs no Federate Protocol server or licence. It
+is a vanilla gRPC client using the same =SubAppSimulator= harness a real Web
+Sub-App uses. The "federate" behaviour is faked *for* it by the server and the
+mock.
+
+* The mock-mode hacks (how a gRPC client fakes being a federate)
+
+=CuisGrpcPublisher= itself does almost no hackery -- that is the point. There is
+*one* trick it knowingly participates in; the rest live server-side.
+
+** Hack #1 -- smuggling an instance handle through the class-handle field
+
+The contract says =Publish_Object_Attributes= returns =object_handle= = the
+*class* handle, and object creation is excluded. In mock mode the server quietly
+violates that. In =RtiAdapter.publishObjectAttributes=:
+
+#+begin_src java
+_rtiAmbassador.publishObjectClassAttributes(classHandle, attributes);
+
+if (_rtiAmbassador instanceof MockRTIambassador) {
+   ObjectInstanceHandle instance = _rtiAmbassador.registerObjectInstance(classHandle);
+   return CuisHandleFactory.toBytes(instance);   // <- instance handle, not class handle
+}
+return CuisHandleFactory.toBytes(classHandle);    // <- real RTI: class handle, per contract
+#+end_src
+
+So on publish the server does the =registerObjectInstance= the *contract forbids
+the client from making*, and stuffs the resulting *instance* handle into the
+=object_handle= field nominally carrying a class handle. The publisher reads it
+and uses it directly:
+
+#+begin_src java
+byte[] instanceHandle = pub.getObjectHandle().toByteArray();
+...
+publisher.updateAttributeValues(instanceHandle, values, new byte[0]);
+#+end_src
+
+It knows this only works in mock mode and guards: if the handle is empty (real
+RTI returns a class handle, no instance) it bails out and tells you to use
+=CuisHlaPublisher=. *That is the one "hack" the publisher actually performs:
+treating a class-handle field as an instance handle.*
+
+** Hack #2 -- the mock loops the publisher's writes back as subscriber callbacks
+
+In a real federation, =register -> discoverObjectInstance= and =update ->
+reflectAttributeValues= happen because the RTI routes between *distinct*
+federates. The mock has no federation, so it calls the stored
+=FederateAmbassador= back on the *same* CUIS server process.
+
+=registerObjectInstance= synchronously fires discovery:
+
+#+begin_src java
+ObjectInstanceHandle instanceHandle = createHandle(...);
+_registeredInstances.put(instanceHandle, objectClass);
+if (_loopbackEnabled && _federateAmbassador != null) {
+   _federateAmbassador.discoverObjectInstance(instanceHandle, objectClass, ...);
+}
+#+end_src
+
+=updateAttributeValues= synchronously fires the reflect:
+
+#+begin_src java
+_capturedUpdates.add(new CapturedUpdate(...));
+if (_loopbackEnabled && _federateAmbassador != null) {
+   _federateAmbassador.reflectAttributeValues(objectInstance, attributeValues, ...);
+}
+#+end_src
+
+The one CUIS server is simultaneously "the publisher's RTI" and "the
+subscriber's RTI." Because the secret =registerObjectInstance= from Hack #1
+loops straight into =discoverObjectInstance=, subscriber Sub-Apps still learn the
+instance the normal way, and every update echoes back as a reflect. The
+subscriber side never knows it is talking to a loopback mock.
+
+** Hack #3 -- fabricated RTI metadata in those callbacks
+
+No real federation, so every contextual argument the RTI would supply is
+invented:
+
+- *Instance name* = =instanceHandle.toString()= -- not a real reserved name.
+- *Producing federate handle* = a brand-new throwaway handle
+  (=createHandle(...FederateHandleImpl...)=).
+- *Transportation type* = hardcoded bytes ={0, 0, 0, 1}=.
+- *Logical time* = =null= (no time management exists).
+- Any =FederateInternalError= from the callback is swallowed (=// Ignore=).
+
+** Hack #4 (minor) -- let the server encode
+
+=CuisHlaPublisher= packs HLA bytes itself
+(=encoder.createHLAfloat64BE(position).toByteArray()=). The gRPC publisher sends
+a typed =Data_Value= instead:
+
+#+begin_src java
+Data_Value.newBuilder().setHlaFloat64(value).build()
+#+end_src
+
+and lets =DataValueCodec.encode= on the server turn it into =HLAfloat64BE=
+bytes. Not a hack against HLA so much as offloading encoding across the gRPC
+boundary -- but it is why the publisher can be RTI-agnostic and dependency-free.
+
+** Summary table
+
+|                       | CuisGrpcPublisher (gRPC, mock)                            | CuisHlaPublisher (real federate)            |
+|-----------------------+-----------------------------------------------------------+---------------------------------------------|
+| What it is            | A plain gRPC Sub-App                                       | A genuine HLA federate via Federate Protocol |
+| Gets instance handle  | Reads it from Publish's =object_handle= (server registered) | Calls =registerObjectInstance= itself       |
+| Needs RTI / licence   | No                                                        | Yes                                         |
+| Relies on             | Server-side instance-on-publish + mock loopback           | Standard HLA, no tricks                     |
+
+The publisher's own hack is just one thing: it reads an instance handle out of a
+publish response that is contractually supposed to hold a class handle. It "acts
+as a proper federate" only because the server registers a backing instance on
+publish (Hack #1) and the mock loops register/update back into discover/reflect
+with fabricated metadata (Hacks #2-3). The trickery is in the server and the
+mock; the publisher is deliberately dumb so it stays indistinguishable from any
+other Web Sub-App.
