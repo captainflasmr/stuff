@@ -11,4 +11,10 @@ Stash      : Nothing stashed
 
 
 
-     
+     (defun pwsh-here ()
+    "Open a native Windows PowerShell console in the current directory."
+    (interactive)
+    (start-process "powershell" nil "powershell.exe"
+                   "-NoExit" "-Command"
+                   (format "Set-Location -LiteralPath '%s'"
+                           (expand-file-name default-directory))))
