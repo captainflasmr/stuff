@@ -1,0 +1,2189 @@
+-*- mode: org; fill-column: 80; org-tags-column: -80; -*-
+#+author: James Dyer
+#+options: toc:nil author:t title:t date:nil tex:t tags:nil todo:nil
+#+startup: inlineimages overview
+#+latex_class_options: [a4paper,portrait,11pt,twocolumn]
+#+latex_header: \fancyhead[C]{Linux Blog}
+#+hugo_base_dir: .
+#+exclude_tags: noexport
+#+filetags: :@linux:@open_source:
+
+* TODO Splitting-opencode-Planning-from-Execution-with-GLM-5.2-and-Deepseek-V4-Flash :2026:opencode:ai:llm:agents:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260727120000-linux--Splitting-opencode-Planning-from-Execution-with-GLM-5.2-and-Deepseek-V4-Flash
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-07-27 12:00>
+:END:
+
+I run [[https://opencode.ai][opencode]] as my primary agentic coding tool.  It has one annoying default: every step — title generation, deep refactor planning, and the actual file edits — runs on whatever single model you set.  That means either burning a frontier-rate thinking model on boilerplate text operations, or pinning a cheap fast model and losing reasoning depth on the hard parts.  There is a better split.
+
+The plan: keep the *thinking* on a frontier reasoning model, and dump all the *donkey work* on a cheap, fast model.  GLM-5.2 does the planning, Deepseek V4 Flash implements.  Total cost drops, quality on the hard bits stays high.
+
+#+hugo: more
+
+** The shape of the split
+
+opencode's [[https://opencode.ai/docs/agents][agents]] are configurable: each one pins a =model=, a =reasoningEffort=, a =mode= (primary / subagent / all), and a =permission= ruleset.  Two agents matter most:
+
+- =plan= — the entry point.  Reads, reasons, plans at file level, then delegates.  Read-only: never edits, writes, or shells itself.
+- =build= — the worker.  Receives a precise, self-contained task from =plan= and executes it.  Cheap reasoning, fast iteration.
+
+Two helpers fill in around them: =explore= (cheap codebase scans, so the planner doesn't waste tokens reading everything) and =general= (frontier thinking for non-trivial research).  Background housekeeping — =title=, =summary=, =compaction= — all go to the cheap model too.  Nothing expensive runs for boilerplate.
+
+** The config
+
+The whole thing lives in =~/.config/opencode/opencode.json=:
+
+#+begin_src json
+{
+    "$schema": "https://opencode.ai/config.json",
+    "model": "opencode-go/deepseek-v4-flash",
+    "small_model": "opencode-go/deepseek-v4-flash",
+    "default_agent": "plan",
+    "subagent_depth": 1,
+    "agent": {
+        "plan": {
+            "mode": "primary",
+            "model": "opencode-go/glm-5.2",
+            "steps": 50,
+            "reasoningEffort": "max",
+            "prompt": "{file:prompts/glm-planner.md}",
+            "permission": {
+                "read": "allow", "glob": "allow", "grep": "allow",
+                "list": "allow", "webfetch": "allow", "task": "allow",
+                "question": "allow",
+                "edit": "deny", "write": "deny", "bash": "deny",
+                "todowrite": "deny"
+            }
+        },
+        "build": {
+            "mode": "all",
+            "model": "opencode-go/deepseek-v4-flash",
+            "steps": 100,
+            "reasoningEffort": "low",
+            "permission": {
+                "read": "allow", "glob": "allow", "grep": "allow",
+                "list": "allow", "edit": "allow", "write": "allow",
+                "bash": "allow"
+            }
+        },
+        "explore":     { "model": "opencode-go/deepseek-v4-flash", "reasoningEffort": "low" },
+        "general":     { "model": "opencode-go/glm-5.2",           "reasoningEffort": "medium" },
+        "title":       { "model": "opencode-go/deepseek-v4-flash", "reasoningEffort": "low" },
+        "summary":     { "model": "opencode-go/deepseek-v4-flash", "reasoningEffort": "low" },
+        "compaction":  { "model": "opencode-go/deepseek-v4-flash", "reasoningEffort": "low" }
+    }
+}
+#+end_src
+
+A few choices worth flagging:
+
+- =default_agent: plan= — default flows through GLM.  Trivial questions resolve in one GLM turn; anything heavier triggers delegation.
+- =small_model= pinned to Deepseek — used by opencode for titles, chat summaries, compaction.  Keeps the per-turn cost floor low.
+- =build.mode: "all"= — the worker is reachable both via delegation (subagent) *and* as a directly-selectable primary, for a one-shot "just make this tiny edit" without paying for a planning pass.
+- =subagent_depth: 1= — =build= cannot launch its own subagents.  Without this cap a cheap worker happily spawned nested research and the cost climbed past the planner's.
+- =plan.permission.task: "allow"= is the one that makes it work — without it, =plan= has no way to delegate and would have to do edits itself, which it can't (=edit: deny=).
+
+** The planner prompt
+
+opencode resolves =prompt: "{file:...}"= at startup and injects the file body as the agent's system prompt.  The =plan= agent uses a dedicated prompt that hammers the delegation contract — pass it tasks that are self-contained, because the subagent starts from a fresh context unless you give it one.
+
+#+begin_src markdown
+# GLM-5.2 — Lead Planner / Orchestrator
+
+You are the lead architect. You do the *thinking*; a cheap fast worker does the *typing*.
+
+## Role
+- Reason carefully about the request and the codebase before acting.
+- Produce a concrete, file-level plan: what changes, where, in what order, and why.
+- Then DELEGATE implementation to the `build` subagent via the task tool.
+- You are read-only: never edit, write, or run shell yourself. You think and direct.
+
+## Work cheap and smart
+- Delegate broad codebase scans to the `explore` subagent instead of reading everything yourself.
+- Delegate implementation to `build` with a precise, self-contained task: exact files,
+  exact changes, constraints. Do not assume `build` shares your context.
+- Review `build`'s result by reading the changed files. If wrong, delegate a corrective task;
+  never redo the work yourself.
+- Batch independent subtasks; sequence dependent ones.
+#+end_src
+
+** How a request actually flows
+
+A real change walks this path:
+
+1. You ask for something.  =default_agent= routes to =plan= (GLM-5.2, =max= reasoning).
+2. =plan= reads the relevant files directly (cheap) or delegates the search to =explore= (cheaper still).
+3. =plan= emits a plan: file list, per-file changes, order, risks.
+4. =plan= calls the =task= tool with one self-contained task.  =build= (Deepseek, =low= reasoning) executes it in its own context — =steps: 100= gives it room to iterate.
+5. =plan= reads the result.  On a miss, =plan= delegates a corrective task rather than fixing it itself.
+
+The cost shape is what you would expect: GLM tokens go on reasoning + review reads, Deepseek tokens on the churn of writing and re-running tools.  Most of the agent loop is Deepseek; the expensive model only touches the hard decisions.
+
+** Two gotchas
+
+1. *Reasoning effort is provider-specific.* =reasoningEffort= is an options-passthrough, not a schema enum — opencode forwards it to the provider.  =low= is the safest universal value.  If your provider ignores it, the worker silently burns reasoning tokens anyway; check the provider docs before trusting it.
+2. *Subagent context is fresh.* The =task= tool spawns =build= with only what you pass it.  Call-by-call the planner must re-send the specifics — file paths, exact diffs, constraints — or the worker guesses and gets it wrong.
+
+** Force-planning mode (optional)
+
+If you would rather GLM plan *every* edit and never let you skip straight to =build=, flip =build.mode= from ="all"= to ="subagent"=.  It then becomes unreachable as a primary agent and only fires when =plan= delegates to it.  I keep it on ="all"= for the quick-edit escape hatch.
+
+** Applying it
+
+opencode loads its config once at startup and does not hot-reload.  After saving =opencode.json= and any prompt files, quit opencode and relaunch.  To debug a broken config without losing the session, set:
+
+#+begin_src bash
+OPENCODE_DISABLE_PROJECT_CONFIG=1 opencode
+#+end_src
+
+That skips the broken project config and boots from globals, so you can edit the file and restart cleanly.
+
+* TODO Hardware-Profile-and-Comparison-Dell-Latitude-5480-vs-Latitude-E7450 :2026:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260701073545-linux--Hardware-Profile-and-Comparison-Dell-Latitude-5480-vs-Latitude-E7450
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-07-01 07:35>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20260701073545-emacs--Hardware-Profile-and-Comparison-Dell-Latitude-5480-vs-Latitude-E7450.jpg
+:END:
+
+This document serves as a technical comparison and archival reference for two recently acquired Dell Latitude laptops. While both are 14-inch business-class machines, they originate from different design paradigms and hardware generations.
+
+- *Dell Latitude E7450*: A premium, ultra-portable 7000-series model (~2015).
+- *Dell Latitude 5480*: A mainstream, high-performance 5000-series workhorse (~2017).
+
+| Feature         | Dell Latitude E7450 (Service Tag: 1HNRZ52)   | Dell Latitude 5480 (Service Tag: 2LP04M2) |
+|-----------------+----------------------------------------------+-------------------------------------------|
+| *Release Era*   | ~2015                                        | ~2017                                     |
+| *Architecture*  | Intel 5th Gen (Broadwell U-Series)           | Intel 6th/7th Gen (Skylake/Kaby Lake)     |
+| *Memory Bus*    | DDR3L (Max 16GB, ~1600 MHz)                  | DDR4 (Max 32GB, 2133/2400 MHz)            |
+| *Graphics*      | Intel HD Graphics 5500                       | Intel HD Graphics 520 / 620               |
+| *Storage Bus*   | SATA M.2 / mSATA Interface (Capped ~550MB/s) | PCIe NVMe M.2 Interface (Up to 3500MB/s)  |
+| *USB-C Support* | No (Legacy USB 3.0 Type-A Only)              | Yes (Supports DisplayPort Over Type-C)    |
+| *Docking*       | Bottom-mounted Legacy E-Port Slider Dock     | Cable-based USB-C / Thunderbolt Docking   |
+| *Power Input*   | 19.5V [3.34A (65W) / 4.62A (90W)] Barrel     | 19.5V Barrel OR Type-C Power Delivery     |
+
+* TODO Samsung-Galaxy-Book-Pro-360-Brightness-Fix-on-Linux :2026:samsung:laptop:sway:brightness:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260615000000-linux--Samsung-Galaxy-Book-Pro-360-Brightness-Fix-on-Linux
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-06-15 00:00>
+:END:
+
+Getting screen brightness control working on a Samsung Galaxy Book Pro 360 running Arch Linux and Sway.  Out of the box, the brightness keys do nothing and the =intel_backlight= sysfs interface reads zero despite the screen being on.  Two kernel parameters and a udev rule fix it completely.
+
+#+hugo: more
+
+** Why it breaks
+
+The Samsung Galaxy Book Pro 360 uses a 12th-gen Intel Alder Lake CPU with Iris Xe Graphics.  Its display is controlled over eDP using DPCD (DisplayPort Configuration Data) commands rather than traditional PWM backlight.  On a stock Arch install two things go wrong:
+
+1. The ACPI video subsystem claims the backlight device ahead of the native Intel driver, so =/sys/class/backlight/intel_backlight/brightness= reads =0= and writes are silently ignored by the hardware.
+2. Even once ACPI stops interfering, the i915 driver defaults to PWM backlight control, which does nothing on a DPCD panel.
+
+** The fix
+
+*** 1. Add kernel parameters to GRUB
+
+Edit =/etc/default/grub= and append two parameters to =GRUB_CMDLINE_LINUX_DEFAULT=:
+
+#+begin_src bash
+sudo sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 acpi_backlight=native i915.enable_dpcd_backlight=3"/' /etc/default/grub
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+#+end_src
+
+- =acpi_backlight=native= stops the ACPI video driver from claiming the backlight, leaving it for the native i915 driver.  Without this, =intel_backlight= stays stuck at 0.
+- =i915.enable_dpcd_backlight=3= forces the i915 driver to use DPCD commands for brightness.  The =3= means force-enable and ignore the Video BIOS Table (VBT), which is necessary because Samsung's VBT does not advertise DPCD support correctly on Linux.
+
+*** 2. Create a udev rule for non-root access
+
+By default only root can write to the backlight sysfs node.  This rule grants the =video= group write access whenever the device is added:
+
+#+begin_src bash
+echo 'ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"' \
+    | sudo tee /etc/udev/rules.d/90-backlight.rules
+#+end_src
+
+Your user should already be in the =video= group (verify with =groups=).  If not: =sudo usermod -aG video $USER=.
+
+*** 3. Reboot and verify
+
+After rebooting, check the parameters are active:
+
+#+begin_src bash
+cat /proc/cmdline
+#+end_src
+
+Then test brightness control directly:
+
+#+begin_src bash
+brightnessctl set 50%
+#+end_src
+
+The screen should dim or brighten visibly.  The brightness reading in =/sys/class/backlight/intel_backlight/brightness= should now reflect the actual hardware level (e.g. ~15000/65535) rather than 0.
+
+** Sway keybindings
+
+Sway's default config already includes brightness bindings pointing at =brightnessctl=, so the Fn keys should work immediately after the reboot.  If your config does not have them, add:
+
+#+begin_src conf
+bindsym --locked XF86MonBrightnessDown exec brightnessctl set 5%-
+bindsym --locked XF86MonBrightnessUp exec brightnessctl set 5%+
+#+end_src
+
+** bootstrap install.sh
+
+The =step_quirk_samsung_backlight= step in =install.sh= applies both kernel parameters and the udev rule automatically as part of a fresh machine setup.  Run it standalone to re-apply on an existing install:
+
+#+begin_src bash
+./install.sh --step step_quirk_samsung_backlight
+#+end_src
+
+* TODO Stopping Surfshark VPN from Freezing Thunar, Deluge and My NAS :2026:vpn:nfs:networking:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260602061340-linux--Stopping-Surfshark-VPN-from-Freezing-Thunar-Deluge-and-My-NAS
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-06-02 06:13>
+:END:
+
+For ages I had a low-level annoyance that I never quite got around to investigating: the moment I connected Surfshark to a VPN server, applications like Thunar and Deluge would take an age to open, and browsing to my =~/nas= directory would hang for what felt like an eternity.  Disconnect the VPN and everything was instant again.
+
+#+hugo: more
+
+It turns out this is not a VPN bug, an app bug, or anything mysterious -- it is a perfectly logical collision between how my NAS is mounted and what a VPN does to your routing table.
+
+** What was actually going on
+
+My NAS is an NFS v3 mount, set up something like this:
+
+#+begin_src text
+192.168.0.10:/volume1/Drive on /home/jdyer/nas type nfs (rw,...,hard,timeo=600,...)
+#+end_src
+
+Two details matter here.  First, the NAS lives at =192.168.0.10= -- a *different subnet* from my laptop, which sits on =192.168.7.x=.  That means the NAS is only reachable via my default route, through the local router.
+
+Second, and this is the killer, the mount is =hard=.  A hard NFS mount will block indefinitely (well, =timeo=600= means 60 seconds per retry) when the server stops responding, rather than returning an error.
+
+Now connect a VPN.  Surfshark, like any sensible full-tunnel VPN, replaces your default route with the tunnel so that *all* your traffic goes through it.  But "all your traffic" now includes packets bound for =192.168.0.10=.  Those get fired off into the VPN tunnel, where the NAS most certainly does not live, and they vanish into the ether.
+
+The NAS is now unreachable.  And because the mount is =hard=, every single =stat()= on =~/nas= blocks for up to a minute instead of failing fast.  Thunar scans your home directory and bookmarks on startup.  Deluge checks its default download location.  Opening =~/nas= obviously touches it directly.  All of them sit there, frozen, waiting on a mount that is being routed into a black hole.
+
+Mystery solved.
+
+** The fix: split-tunnel the NAS subnet
+
+The clean solution is to tell the system that traffic for the NAS subnet should *always* go via the local router, never via the VPN.  This is a form of split tunnelling, done at the routing level.
+
+The good news is that the Surfshark Linux client uses WireGuard-style policy routing under the hood, with a =suppress_prefixlength 0= rule.  In plain English: it captures the *default* route into the tunnel, but it still honours any *specific* route you have in the main routing table.  So if I add an explicit route for the =192.168.0.0/24= subnet, it wins over the tunnel.
+
+Since I use NetworkManager, the tidiest way is to bake the route straight into my Wi-Fi connection profile so it is always present and survives reboots:
+
+#+begin_src bash
+nmcli connection modify STRONG_ATRIA_F6NF +ipv4.routes "192.168.0.0/24 192.168.7.254"
+nmcli connection up STRONG_ATRIA_F6NF
+#+end_src
+
+Substitute your own connection name (=nmcli connection show --active=), your NAS subnet, and your router's address.
+
+To verify, with the VPN connected:
+
+#+begin_src bash
+ip route get 192.168.0.10
+#+end_src
+
+The output should show the path going =via 192.168.7.254 dev wlo1= -- my local router and Wi-Fi interface -- and crucially *not* a =wg= or =tun= device.  If it does, NAS traffic is bypassing the tunnel, and Thunar, Deluge and =~/nas= all spring open instantly again, VPN or no VPN.
+
+To undo it, swap the =+ipv4.routes= for =-ipv4.routes= with the same value.
+
+** A note on security
+
+Some people get twitchy about routing anything outside the VPN.  In this case the bypassed traffic is purely LAN-local -- it never leaves my house and never touches the internet -- so there is nothing here that the VPN was protecting in the first place.  This is exactly the kind of traffic you *want* to exclude from a tunnel.
+
+I wrapped the whole thing up in a little =nas-bypass= script in =~/bin= so future-me can re-apply or check it without having to remember the incantation.
+
+
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260516091728-linux--Pywal-and-Sway-Dynamic-Window-Decorations-from-Your-Wallpaper
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-05-16 09:17>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20260516091728-emacs--Pywal-and-Sway-Dynamic-Window-Decorations-from-Your-Wallpaper.jpg
+:END:
+
+I am always fiddling around with wallpapers, themes, backgrounds and the like, so it was only a matter of time before I wanted my Sway window decorations to actually match my wallpaper rather than the same static Nord palette I have been staring at for years.
+
+#+hugo: more
+
+Don't get me wrong, Nord is great, and it has served me well, but once you start using pywal to generate colour palettes from your wallpaper, having your terminal, GTK apps, and waybar all shift to match while those window titlebars sit there in stubborn #434c5e starts to feel, well, a bit disjointed.
+
+So I did what any self-respecting tiling WM user would do: I made them obey pywal too.
+
+I already had pywal running on wallpaper change via a simple script, and my Sway config had the usual hardcoded =client.focused= and friends in =config.d/theme=:
+
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20260516091728-emacs--Pywal-and-Sway-Dynamic-Window-Decorations-from-Your-Wallpaper.jpg]]
+
+That is five colour fields per line, by the way -- border, background, text, indicator, and child_border -- and I was setting them all to pre-selected Nord values that never changed no matter how leafy or dark my wallpaper was.
+
+I ended up with a two-layer solution because colours need to work at two different times:
+
+1. On Sway start or reload -- the config file needs the right colours baked in from the start.
+2. On wallpaper change -- colours need to update live without restarting Sway.
+
+Pywal supports custom templates.  You drop a file in =~/.config/wal/templates/= with placeholder variables like ={foreground}=, ={background}=, ={color1}= etc, and pywal expands them when it runs.  The output lands in =~/.cache/wal/= with the same filename.
+
+So I created =~/.config/wal/templates/sway=:
+
+#+begin_src conf
+# Pywal-generated colors for Sway
+client.focused          {foreground}  {background}  {foreground}  {color5}  {color6}
+client.focused_inactive {color8}      {background}  {color8}      {color4}  {color4}
+client.unfocused        {color8}      {background}  {color8}      {color4}  {color4}
+client.urgent           {color1}      {color1}      {background}  {foreground}  {color1}
+#+end_src
+
+The mapping is fairly intuitive: focused windows get the foreground colour for borders and text with a subtle accent on the indicator, while unfocused ones drop back to a muted =color8= so they sit quietly in the background.  Urgent windows invert and use =color1= (the red-ish accent) as the dominant colour.
+
+Then I added one line to =config.d/theme=:
+
+#+begin_src conf
+include ~/.cache/wal/sway
+#+end_src
+
+Now every time I reload Sway (=Mod4+o=, in my setup), it picks up whatever pywal's current palette is.  No more Nord-by-default.
+
+Sway reload is fine for a one-off, but I change wallpapers pretty regularly (bound to =Mod4++=) and I want the colours to shift immediately.  Enter =swaymsg=.
+
+My =wallpaper_change.sh= script already ran pywal and set the wallpaper, so I just needed it to also poke the window decoration colours at runtime.  The critical bit:
+
+#+begin_src bash
+# Load colors from pywal
+colors=$(cat ~/.cache/wal/colors.json)
+
+fg=$(echo $colors | jq -r '.special.foreground')
+bg=$(echo $colors | jq -r '.special.background')
+c1=$(echo $colors | jq -r '.colors.color1')
+c4=$(echo $colors | jq -r '.colors.color4')
+c5=$(echo $colors | jq -r '.colors.color5')
+c6=$(echo $colors | jq -r '.colors.color6')
+c8=$(echo $colors | jq -r '.colors.color8')
+
+# Update sway window decorations
+swaymsg client.focused          "$fg" "$bg" "$fg" "$c5" "$c6"
+swaymsg client.focused_inactive "$c8" "$bg" "$c8" "$c4" "$c4"
+swaymsg client.unfocused         "$c8" "$bg" "$c8" "$c4" "$c4"
+swaymsg client.urgent            "$c1" "$c1" "$bg" "$fg" "$c1"
+#+end_src
+
+The order of those five arguments to =swaymsg client.focused= is: border, background, text colour, indicator colour, child_border colour.  It matches the Sway config format exactly, so I kept the same mapping I used in the template.
+
+Now when I flip to a warm, earthy wallpaper, my window borders warm up too.  Dark wallpapers give dark, moody borders.  It is a small thing, but it makes the whole desktop feel coherent in a way that partial theming never quite achieves.
+
+And because the template and the =swaymsg= calls share the same colour mapping, everything stays in sync regardless of whether the colours were loaded at Sway startup or pushed live mid-session.
+
+If you are already running pywal with Sway, this is about ten lines of config and a tiny template.  Well worth the five minutes.
+
+The full dotfiles are at [[https://github.com/captainflasmr/dotfiles][github.com/captainflasmr/dotfiles]], and as always, I will probably tweak the colour assignments as different wallpapers expose edge cases!
+
+* TODO Automatic-dark-light-mode-with-darkman-on-Sway :2026:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260420191300-linux--Automatic-dark-light-mode-with-darkman-on-Sway
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-04-20 19:13>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20260420191300-emacs--Automatic-dark-light-mode-with-darkman-on-Sway.jpg
+:END:
+
+I wanted one keystroke (and sunrise/sunset automation) to flip my whole Sway session between light and dark: GTK apps, Thunderbird, Emacs, and the terminal. My first attempt was a shell script that rewrote =~/.config/gtk-3.0/settings.ini= and called it a day — but GTK apps only read that file at startup, so nothing actually changed live until I restarted everything. The right tool for the job turned out to be [[https://darkman.whynothugo.nl/][darkman]].
+
+** What darkman gives you
+
+A tiny background service that:
+
+- Tracks sunrise/sunset for your location and flips mode automatically.
+- Exposes the current mode over D-Bus and the xdg-desktop-portal =color-scheme= property, which modern GTK4/libadwaita apps, Firefox, Thunderbird, Chromium and Electron all respect live.
+- Runs user scripts on every transition so you can hook in anything that doesn't listen to the portal (Emacs, terminal, etc.).
+- Has a =darkman toggle= command you can bind to a key.
+
+** Install and configure
+
+On Arch:
+
+#+begin_src bash
+sudo pacman -S darkman
+#+end_src
+
+Create =~/.config/darkman/config.yaml=. I started with =usegeoclue: true= but geoclue refused the connection on a bare Sway setup (no desktop agent to authorise non-system apps), leaving darkman in a one-crash-per-minute restart loop. A static lat/lng is simpler and rock-solid — location changes aren't frequent enough to matter:
+
+#+begin_src yaml
+lat: 50.80
+lng: -1.09
+portal: true
+#+end_src
+
+Enable the user service:
+
+#+begin_src bash
+systemctl --user enable --now darkman.service
+darkman get        # should print "dark" or "light"
+#+end_src
+
+** Transition hooks — mind the directory
+
+This is the bit that tripped me up. Darkman looks for hook scripts under =$XDG_DATA_HOME= (=~/.local/share/=), *not* =$XDG_CONFIG_HOME=. I spent a while wondering why my scripts in =~/.config/dark-mode.d/= were being ignored until I checked the man page:
+
+#+begin_quote
+Scripts are searched in a directory named =darkman= inside paths defined in the XDG_DATA_DIRS as well as XDG_DATA_HOME.
+#+end_quote
+
+The modern format is a single script under =~/.local/share/darkman/= that receives =dark= or =light= as =$1=.
+
+*** GTK and libadwaita
+
+The key insight: =gsettings set org.gnome.desktop.interface color-scheme= triggers live updates in every running GTK3/4/libadwaita app. No restart required. I still rewrite =settings.ini= so freshly-launched apps start in the right mode.
+
+=~/.local/share/darkman/gtk.sh=:
+
+#+begin_src bash
+#!/bin/sh
+GTK_CONFIG="$HOME/.config/gtk-3.0/settings.ini"
+
+case "$1" in
+    dark)
+        SCHEME='prefer-dark'
+        THEME='Adwaita-dark'
+        PREFER=1
+        ;;
+    light)
+        SCHEME='prefer-light'
+        THEME='Adwaita-light'
+        PREFER=0
+        ;;
+    *) exit 0 ;;
+esac
+
+gsettings set org.gnome.desktop.interface color-scheme "$SCHEME"
+gsettings set org.gnome.desktop.interface gtk-theme "$THEME"
+gsettings set org.gnome.desktop.interface icon-theme 'Adwaita'
+
+if [ -f "$GTK_CONFIG" ]; then
+    sed -i "s/^gtk-theme-name=.*/gtk-theme-name=$THEME/" "$GTK_CONFIG"
+    sed -i "s/^gtk-icon-theme-name=.*/gtk-icon-theme-name=Adwaita/" "$GTK_CONFIG"
+    sed -i "s/^gtk-application-prefer-dark-theme=.*/gtk-application-prefer-dark-theme=$PREFER/" "$GTK_CONFIG"
+fi
+#+end_src
+
+Remember to =chmod +x= all the hook scripts.
+
+*** Emacs
+
+=emacsclient --eval= lets us swap the theme in the running daemon. Pair whatever you like — I went with =doom-old-hope= for dark and =modus-operandi-tinted= for light. The =|| true= at the end means the hook silently no-ops if no server is running, which keeps darkman happy.
+
+=~/.local/share/darkman/emacs.sh=:
+
+#+begin_src bash
+#!/bin/sh
+case "$1" in
+    dark)  THEME=doom-old-hope ;;
+    light) THEME=modus-operandi-tinted ;;
+    *) exit 0 ;;
+esac
+
+emacsclient --no-wait --eval "(progn
+    (mapc #'disable-theme custom-enabled-themes)
+    (load-theme '$THEME t))" >/dev/null 2>&1 || true
+#+end_src
+
+*** Alacritty
+
+Alacritty live-reloads its config when imported files change, so we point it at a =theme.toml= the hook overwrites.
+
+Add to =~/.config/alacritty/alacritty.toml=:
+
+#+begin_src toml
+general.import = ["~/.config/alacritty/theme.toml"]
+#+end_src
+
+Keep two palettes in =~/.config/alacritty/themes/gruvbox-dark.toml= and =gruvbox-light.toml= (gruvbox pairs nicely with doom-old-hope, but pick whatever you like), then:
+
+=~/.local/share/darkman/alacritty.sh=:
+
+#+begin_src bash
+#!/bin/sh
+THEMES="$HOME/.config/alacritty/themes"
+TARGET="$HOME/.config/alacritty/theme.toml"
+
+case "$1" in
+    dark)  cp "$THEMES/gruvbox-dark.toml"  "$TARGET" ;;
+    light) cp "$THEMES/gruvbox-light.toml" "$TARGET" ;;
+esac
+#+end_src
+
+*** Thunderbird
+
+No hook needed — Thunderbird follows the xdg-desktop-portal =color-scheme= signal that darkman broadcasts (because =portal: true= is set in the config). The only catch: if you have an explicit Light or Dark theme enabled it will override the system preference. Open =Tools → Add-ons and Themes → Themes= and make sure *System theme — auto* is the active one.
+
+** Sway keybinding
+
+Finally, bind a key to toggle manually:
+
+#+begin_src
+bindsym Mod4+f2 exec darkman toggle
+#+end_src
+
+Reload Sway (=swaymsg reload=) and that's it. Super+F2 now flips GTK, Thunderbird, Emacs and the terminal together, and sunrise/sunset handles itself.
+
+** Takeaways
+
+- Editing =settings.ini= looks like it should work but it's a dead end; apps only read it at startup. =gsettings= is the live-switching path for GTK.
+- Hook scripts live under =~/.local/share/darkman/=, not =~/.config=. The man page is clear, my assumptions were not.
+- On a bare Sway setup, skip geoclue and hard-code your coordinates. Save yourself the authorisation rabbit-hole.
+- Thunderbird and modern GTK apps come along for free thanks to =portal: true= — you only need custom hooks for things the portal doesn't reach (Emacs, terminals, random scripts).
+
+* TODO Pulling-and-rebasing-remote-change-into-changeset :2025:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20250227055122-linux--Pulling-and-rebasing-remote-change-into-changeset
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2025-02-27 05:51>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20250227055122-emacs--Pulling-and-rebasing-remote-change-into-changeset.jpg
+:END:
+
+I have the following as advice, there is a change to main on remote and I just want to fold it in, it is a simple couple of edits to a readme, how should I proceed? : Running "git push"...
+
+#+begin_src 
+ErrorHandler::Throw - warning: QFSFileEngine::open: No file name specified file:  line: 0 function: 
+To github.com:captainflasmr/ollama-buddy.git
+ ! [rejected]        main -> main (fetch first)
+error: failed to push some refs to 'github.com:captainflasmr/ollama-buddy.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally. This is usually caused by another repository pushing to
+hint: the same ref. If you want to integrate the remote changes, use
+hint: 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+Running "git pull --stat"...
+ErrorHandler::Throw - warning: QFSFileEngine::open: No file name specified file:  line: 0 function: 
+From github.com:captainflasmr/ollama-buddy
+   515df1f..743b8cf  main       -> origin/main
+hint: You have divergent branches and need to specify how to reconcile them.
+hint: You can do so by running one of the following commands sometime before
+hint: your next pull:
+hint:
+hint:   git config pull.rebase false  # merge
+hint:   git config pull.rebase true   # rebase
+hint:   git config pull.ff only       # fast-forward only
+hint:
+hint: You can replace "git config" with "git config --global" to set a default
+hint: preference for all repositories. You can also pass --rebase, --no-rebase,
+hint: or --ff-only on the command line to override the configured default per
+hint: invocation.
+fatal: Need to specify how to reconcile divergent branches.
+<shell-maker-end-of-prompt>
+#+end_src
+Since the remote `main` branch has updates that you don’t have locally, you need to integrate those changes before pushing. Given that the update is just a couple of edits to the README, the simplest approach is to **fetch and rebase** to avoid unnecessary merge commits.
+
+### Steps to resolve:
+
+1. **Fetch the latest changes**
+   ```bash
+   git fetch origin
+   ```
+
+2. **Rebase your local changes on top of the remote `main`**  
+   This applies your local commits after the latest remote changes.
+   ```bash
+   git rebase origin/main
+   ```
+
+   - If there are no conflicting changes, this should complete successfully.
+   - If there are conflicts, Git will pause and ask you to resolve them.
+
+3. **Resolve any merge conflicts (if prompted)**
+   - Open the conflicting files, manually resolve conflicts.
+   - Mark them as resolved:
+     ```bash
+     git add <file>
+     ```
+   - Continue the rebase:
+     ```bash
+     git rebase --continue
+     ```
+
+4. **Push your changes**  
+   Now that your branch is up to date with the remote, you can push:
+   ```bash
+   git push origin main
+   ```
+
+### Alternative: Merge Instead of Rebase
+If you prefer to merge the remote changes instead of rebasing:
+```bash
+git pull --no-rebase origin main
+git push origin main
+```
+This creates a merge commit and preserves the history.
+
+Since it’s just README edits, rebase is recommended to keep history clean! 🚀
+
+* TODO grub-repair-on-linux-garuda-boot-repair                            :2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20241022235848-linux--grub-repair-on-linux-garuda-boot-repair
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2024-10-22 23:58>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20241022235848-emacs--grub-repair-on-linux-garuda-boot-repair.jpg
+:END:
+
+When the following error message is presented on boot:
+
+#+begin_src
+error: no such partition.
+Entering rescue mode...
+grub rescue>
+#+end_src
+
+Option should be off the main screen when on a live disk, called boot-repair
+
+Install garuda-boot-repair and follow the instructions.
+
+Choose the first partition on the main disk /boot/efi e.t.c
+
+Install by selecting ESP
+
+This will reset the grub but only for linux
+
+To reset and pick up windows, install grub-customizer, uninstall the garuda boot packages and simply just run up.  It will pick up the windows partition and then just select Save.
+
+Now reboot!
+
+* TODO Using-GIMP-Filters-On-Command-Line                                 :2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20241018082803-linux--Using-GIMP-Filters-On-Command-Line
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2024-10-18 08:28>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20241018082803-emacs--Using-GIMP-Filters-On-Command-Line.jpg
+:END:
+When using filters on the command line in GIMP, for example in my auto colour script PictureAutoColour firstly a script needs to be defined in:
+
+~/.config/GIMP/2.10/scripts/batch-gimp.scm
+
+#+begin_src elisp
+(define (batch-gimp pattern
+                radius
+                amount
+                threshold)
+  (let* ((filelist (cadr (file-glob pattern 1))))
+   (while (not (null? filelist))
+      (let* ((filename (car filelist))
+          (image (car (gimp-file-load RUN-NONINTERACTIVE
+                        filename filename)))
+          (drawable (car (gimp-image-get-active-layer image))))
+       (gimp-levels-stretch drawable)
+       (gimp-file-save RUN-NONINTERACTIVE
+               image drawable filename filename)
+       (gimp-image-delete image))
+      (set! filelist (cdr filelist)))))
+#+end_src
+
+and then called from the script as follows:
+
+#+begin_src
+GIMPCMD="gimp -i -b '(batch-gimp \"$A\" 5.0 1.0 0)' -b '(gimp-quit 0)'"
+#+end_src
+
+This calls the GIMP internal filters.
+
+There is also the option of using gmic and gegl filters:
+
+   # gmic "$A" -normalize 0,255 -o "$A"
+   # gmic "$A" -rgb2hsl -sh[0] +10 -hsl2rgb -o "$A"
+   # gmic "$A" -fx_temperature,-2000 -o "$A"
+   # gmic "$A" -apply_colorbalance[0] -30,-30,20 -o "$A"
+   # gegl "$A" -o "$A" -- gegl:normalize gegl:auto-white-balance
+
+and even more interestingly there is DarkTable!, just create a new style with edits and it will be in :
+
+#+begin_src
+/home/jdyer/.config/darktable/styles
+#+end_src
+
+   # darktable-cli "$A" "$A" --style auto-color
+
+* TODO garuda-package-download-fix                                        :2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20240720104222-linux--garuda-package-download-fix
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2024-07-20 10:42>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20240720104222-emacs--garuda-package-download-fix.jpg
+:END:
+If a package is raising an error when downloading and there maybe is a chaotic download error, then run the following:
+#+hugo: more
+
+garuda-update remote fix
+
+* TODO Installing-Epson-Photo-1500W-On-Linux                              :2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20240519210710-linux--Installing-Epson-Photo-1500W
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2024-05-19 21:07>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20240519210710-emacs--Installing-Epson-Photo-1500W.jpg
+:END:
+#+hugo: more
+
+** Find Model / Driver
+
+lpinfo -m
+
+which will return something like :
+
+gutenprint.5.3://escp2-1410/expert Epson Stylus Photo 1410 - CUPS+Gutenprint v5.3.4
+gutenprint/5.3/Global/stp-escp2-1410.5.3.sim.ppd.gz Epson Stylus Photo 1410 - CUPS+Gutenprint v5.3.4 Simplified
+
+with the driver files located in:
+
+/usr/share/cups/model/gutenprint/5.3/Global
+
+but the lpstat command which we will use to set up the printer already knows about :
+
+/usr/share/cups/model
+
+** Find uri
+
+This is simple:
+
+lpinfo -v
+
+direct usb://EPSON/Stylus%20Photo%201500?serial=4E4152593031383362
+
+if no obvious printer or EPSON is apparent then the printer is likely not connected.
+
+** Set Printer Up
+
+I think you need to be root to set it up, we now have the relevant info :
+
+sudo lpadmin -p Epson_1500W -E -v usb://EPSON/Stylus%20Photo%201500?serial=4E4152593031383362 -m gutenprint/5.3/Global/stp-escp2-1410.5.3.sim.ppd.gz
+
+-E enables
+
+you will always get the following message :
+
+lpadmin: Printer drivers are deprecated and will stop working in a future version of CUPS.
+
+** test
+
+lpstat -p
+
+printer Epson_1500W is idle.  enabled since Sun 19 May 2024 21:02:00 BST
+
+** error checking
+
+check in :
+
+/var/log/cups/error_log
+
+** uninstall
+
+sudo lpadmin -x Epson_1500W
+
+** Print!
+
+you should technically be able to print something now!
+
+* TODO Read-USB-Speeds                                                    :2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20240519162727-linux--Read-USB-Speeds
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2024-05-19 16:27>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20240519162727-emacs--Read-USB-Speeds.jpg
+:END:
+#+hugo: more
+sudo hdparm -t /dev/sda1
+
+** summary of expected results
+
+*** USB Standards and Speeds
+
+- **USB 2.0:** Offers transfer rates up to 480 Mbps, but real-world speeds often hover around 30-40 MB/s for reads.
+- **USB 3.0 (also known as USB 3.1 Gen 1):** Officially supports speeds up to 5 Gbps. Typical real-world read speeds might range from 100 MB/s to 400 MB/s, depending on the device.
+- **USB 3.1 (also known as USB 3.1 Gen 2):** Doubles the potential throughput to 10 Gbps. Real-world speeds for high-quality drives can range from 300 MB/s to close to 1 GB/s for some external SSDs.
+- **USB 3.2:** Not as widespread in terms of devices at the time of writing, but it potentially offers up to 20 Gbps for devices supporting the standard.
+- **USB 4:** Offers speeds up to 40 Gbps under ideal conditions, but devices utilizing this standard are still not as common. Speeds will highly depend on the devices and setups involved.
+
+*** Drive Types
+
+- **HDD:** External HDDs are limited by their mechanical nature, with speeds often falling in the range of 80-160 MB/s for USB 3.0 and above interfaces.
+- **SSD:** External SSDs can take better advantage of faster USB interfaces, with read speeds potentially reaching up to and exceeding 1 GB/s for USB 3.1 and later, assuming the drive's internal speed supports it.
+- **Flash Drives:** Speeds can vary widely based on the quality and design of the flash drive, from as slow as 10 MB/s for low-end USB 2.0 drives to 400 MB/s or more for high-end USB 3.1 (and beyond) flash drives.
+
+*** Other Factors
+
+- **File System:** The type of file system (e.g., NTFS, FAT32, exFAT, HFS+, ext4) can affect speeds due to differences in efficiency and overhead.
+- **File Size and Type:** Smaller files can take longer to transfer overall than large files due to overhead. A large number of small files can significantly reduce the speed.
+- **Computer and Port:** The USB port's specification on your computer and how it handles data can also impact speeds. Older computers may not fully leverage the speeds offered by newer USB standards.
+
+*** Typical Ranges
+
+Given these variables, here’s a very broad set of typical ranges for read speeds from an attached USB drive:
+
+- USB 2.0 drives: **20-40 MB/s**
+- USB 3.0/3.1 drives: **100-400 MB/s**
+- High-end USB 3.1/3.2 SSDs: **up to 1 GB/s or slightly more**
+- USB 4 devices: **potentially faster than 1 GB/s**, but dependent on device capabilities and other factors.
+
+** hard disk native
+
+/dev/nvme0n1p7:
+ Timing buffered disk reads: 1608 MB in  3.00 seconds = 535.66 MB/sec
+
+** READ blue usba/usbc - exfat
+
+/dev/sda1:
+ Timing buffered disk reads: 140 MB in  3.07 seconds =  45.60 MB/sec
+
+** READ red usba/usbc - exfat
+
+/dev/sda1:
+ Timing buffered disk reads: 312 MB in  3.01 seconds = 103.54 MB/sec
+
+** red hard drive usba
+
+/dev/sda1:
+ Timing buffered disk reads: 348 MB in  3.01 seconds = 115.77 MB/sec
+
+** samsung T7Touch
+
+/dev/sda1:
+ Timing buffered disk reads: 1230 MB in  3.06 seconds = 401.47 MB/sec
+
+** TV Disk
+
+/dev/sda1:
+ Timing buffered disk reads: 306 MB in  3.01 seconds = 101.52 MB/sec
+
+* TODO How-To-Rip-Cds-In-Linux                                        :k3b:2024:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231231123645-linux--How-To-Burn-Cds-In-Linux
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-12-31 12:36>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231231123645-linux--How-To-Burn-Cds-In-Linux/2024-01-01-15-21-44_001.jpg
+:END:
+First plug in a CD drive and insert the disk and make sure the Audio Disc is available on the system, typically through the file explorer.
+
+#+hugo: more
+
+** K3b
+
+Run up K3b (K3b startup may require patience - ignore any errors regarding executables not present to write to CD or DVDs as we are only reading from the disk and [x] Do now show again -> *Close*)
+
+Menu -> Tools -> Rip Audio CD...
+
+#+attr_org: :width 300px
+#+attr_html: :width 60%
+[[file:static/linux/20231231123645-linux--How-To-Burn-Cds-In-Linux/2024-01-01-15-30-30_001.jpg]]
+
+A window showing the tracks to rip will be displayed
+
+*Start Ripping*
+
+*** Settings:
+
+- Filetype: Mp3 (Lame)
+- Target Folder: <destination directory>
+
+*** File Naming:
+
+- Ripped files pattern: %T/%n_%t
+- Replace all blanks with: [x] _
+
+*Start Ripping* (a dialog showing Ripping Audio Tracks from ... will be displayed)
+
+#+attr_org: :width 300px
+#+attr_html: :width 80%
+[[file:static/linux/20231231123645-linux--How-To-Burn-Cds-In-Linux/2024-01-01-10-21-00.jpg]]
+
+Wait for all tracks to be ripped into selected location and *Success* to be displayed
+
+*Close K3b*
+
+** Tidy Up
+
+Check the files names and remove all strange characters.
+
+If the album is one of a multiple set of disks then prepend an integer dash, for example:
+
+#+begin_src
+1-01_Beat_It.mp3
+2-01_How_Will_I_Know.mp3
+#+end_src
+
+** EasyTAG (add cover art)
+
+In a file explorer, Navigate to the ripped folder right click and Open With -> EasyTAG
+
+#+attr_org: :width 300px
+#+attr_html: :width 80%
+[[file:static/linux/20231231123645-linux--How-To-Burn-Cds-In-Linux/2024-01-01-15-21-44_001.jpg]]
+
+You can add any additional tags at this stage but as k3b will have validly auto tagged all the main ones we just need to add some cover art.
+
+Search for the album cover art online and screenshot the album image.
+
+In EasyTag, select all the tracks, on the right hand side select the Images tab, drag and drop in the captured image then select the image icon at the bottom of the image tab which will copy the image to all selected tracks and select the *Save* icon to save all tracks.
+
+#+attr_org: :width 300px
+#+attr_html: :width 80%
+[[file:static/linux/20231231123645-linux--How-To-Burn-Cds-In-Linux/2024-01-01-15-52-14.jpg]]
+
+** Copy in to main Music folder
+
+Copy the directory into your music collection folder.
+
+** Sanity Test
+
+Load the mp3 files into a player (for example *Elisa*) and check that title / album and cover art is correctly loaded.
+
+For emacs run =emms-add-directory= and select the relevant directory.
+
+** Sync to external music players
+
+Now sync the updated music collection to a NAS and possible SD card based music players.
+
+* TODO Tidying-Up-mp3-Collection                                          :2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231127150602-linux--Tidying-Up-mp3-Collection
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-11-27 15:06>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231127150602-emacs--Tidying-Up-mp3-Collection.jpg
+:END:
+#+hugo: more
+** mp3tag configure
+
+Run mp3tag with MyMusicLibrary
+
+File -> Options -> Tags -> Mpeg
+Read
+- [X] ID3v1
+- [X] ID3v2
+- [ ] APE
+Write
+- [X] ID3v2.3 ISO-8859-1
+Remove
+- All selected
+
+** mp3tag tag save to 2.3
+
+Select all tracks
+
+Save Tag
+
+this will write to ID3v2.3 ISO-8859-1 as selected above
+
+I had quite a few that were v2.4 which can cause some issues with some mp3 players notable SanDisk ClipJam
+
+** mp3tag tag remove
+
+Add action "remove fields except"
+
+Filename;Path;Tag;Title;Artist;Album;AlbumArtist;Track;Discnumber;Year;Genre;Codec;Bitrate;Frequency;Length;Modified;picture
+
+Note: the ;picture is not obvious but will preserve the cover art
+
+This will remove the following:
+Comment
+and anything else presumably?
+
+** eyeD3 command line tidy
+
+I think at this point some ID3v1 still exists so:
+
+cd ~/MyMusicLibrary
+eyeD3 -r --encoding utf8 .
+eyeD3 -r --remove-v1 .
+
+** Sanity
+
+eyeD3 -r -v . > ~/Music-tag-info-after-all.txt
+
+Now the media for the mp3 player is much faster and doesn't seem to get stuck.
+
+I might think about removing the following:
+
+- [X] Year
+- [ ] Album Artist (albumartist)
+
+which actually removed something called *recording date*
+
+** playlist
+
+Trying putting in CLIP JAM/Playlists
+
+in the form *.m3u:
+
+../../EOS_DIGITAL/MyMusicLibrary/1000_Forms_of_Fear_(Deluxe_Version)/01_Chandelier.mp3
+../../EOS_DIGITAL/MyMusicLibrary/1000_Forms_of_Fear_(Deluxe_Version)/02_Big_Girls_Cry.mp3
+
+There isn't one in the EOS_DIGITAL directly
+
+* TODO Using-Linux-Pass                                          :password:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231123154118-linux--Using-Linux-Pass
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-11-23 15:41>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231123154118-emacs--Using-Linux-Pass.jpg
+:END:
+Using the *pass* linux CLI
+#+hugo: more
+
+Install *pass*
+
+#+begin_src
+gpg --full-generate-key
+#+end_src
+
+A directory /home/jdyer/.gnupg contains:
+
+#+begin_src
+gpg.conf
+#+end_src
+
+which contains the generated key for encryption
+
+This can now be used to initialise a password database:
+
+#+begin_src
+pass init <gpg key>
+#+end_src
+
+which creates /home/jdyer/.password-store with .gpg-id containing the creation key.
+
+when creating and encrypting a user database password is entered which can be used to unlock.
+
+add in items with:
+
+#+begin_src
+pass insert <item>
+#+end_src
+
+and input password
+
+An individual <item>.gpg is created in .password-store and can be opened in emacs with the user passsword.
+
+Passwords can be retrieved by either opening in emacs or running the *pass* command, for example:
+
+#+begin_src
+pass <item>
+#+end_src
+
+retrieves the password, if the database is already open then the password is to stdout.
+
+Then this can be used for retrieving for example an openai-key from emacs chatgpt-shell:
+
+#+begin_src elisp
+  (use-package chatgpt-shell
+    :ensure t
+    :custom
+    ((chatgpt-shell-openai-key
+       (lambda ()
+         (auth-source-pass-get 'secret "openai-key")))))
+#+end_src
+
+* TODO Create-Iso-From-Files                                     :noexport:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231019180120-linux--Create-Iso-From-Files
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-10-19 18:01>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231019180120-emacs--Create-Iso-From-Files.jpg
+:END:
+#+hugo: more
+#+begin_src bash
+  #!/bin/bash
+  # converts a file into an iso
+  FILE=$1
+
+  THE_TAG=${FILE%.*}
+
+  mkisofs -R -J -allow-leading-dots -max-iso9660-filenames -A "$THE_TAG" -abstract "$THE_TAG" -biblio "$THE_TAG" -relaxed-filenames -allow-lowercase -joliet -joliet-long -o ./${THE_TAG}.iso ./$FILE
+#+end_src
+
+* TODO Gnome-Terminal-Gtk-Settings                               :noexport:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231015153018-linux--Gnome-Terminal-Gtk-Settings
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-10-15 15:30>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231015153018-emacs--Gnome-Terminal-Gtk-Settings.jpg
+:END:
+add to the following file:
+#+hugo: more
+
+/home/jdyer/.config/gtk-3.0/gtk.css
+
+#+begin_src css
+  VteTerminal, TerminalScreen, vte-terminal {
+      padding: 10px 10px 10px 10px;
+      -VteTerminal-inner-border: 10px 10px 10px 10px;
+  }
+#+end_src
+
+* TODO Zero-Erase-SSD                                            :noexport:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20230724204959-linux--Zero-Erase-SSD
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2023-07-24
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20230724204959-emacs--Zero-Erase-SSD.jpg
+:END:
+I use the following for an SSD:
+#+hugo: more
+
+#+begin_src bash
+  shred -vf /dev/nvme0n1p5
+  blkdiscard /dev/nvme0n1p5
+#+end_src
+
+* TODO Linux-Gestures-Using-Fusuma                               :noexport:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20230611204240-linux--Linux-Gestures-Using-Fusuma
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2023-06-11
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20230611204240-emacs--Linux-Gestures-Using-Fusuma.jpg
+:END:
+from getting ydotool to work on X and Wayland by running correctly and then fusuma to use the input keys
+#+hugo: more
+
+* TODO Touchpad Slow Scrolling                                        :noexport:
+
+You can modify touchpad scroll sensitivity in Linux by following the steps below:
+
+1. Open your Terminal
+2. Type "xinput list" and press enter. This will display a list of input devices available on your machine
+3. Find the name of your touchpad (It should be listed under “virtual core pointer”)
+4. Type "xinput list-props [touchpad ID]" and press enter. Replace [touchpad ID] with the ID number of your touchpad.
+5. In the list of properties that are displayed, find "Scrolling Distance" and note the current values.
+6. Adjust the values to your desired sensitivity level by typing "xinput set-prop [touchpad ID] [property ID] [scroll amount]" and press enter. Replace [property ID] with the ID number of “Scrolling Distance,” and [scroll amount] with the number you want.
+7. Test the touchpad scrolling to confirm the new sensitivity.
+
+Note: The scroll amount varies between 1 and 100. A higher number means that the scroll speed is slower, and a lower number results in faster scrolling.
+
+xinput list
+⎡ Virtual core pointer                    	id=2	[master pointer  (3)]
+⎜   ↳ Virtual core XTEST pointer              	id=4	[slave  pointer  (2)]
+⎜   ↳ ZNT0001:00 14E5:E545 Mouse              	id=10	[slave  pointer  (2)]
+⎜   ↳ ZNT0001:00 14E5:E545 Touchpad           	id=11	[slave  pointer  (2)]
+⎜   ↳ Keymapper                               	id=20	[slave  pointer  (2)]
+⎜   ↳ ATML1000:00 03EB:2150                   	id=14	[slave  pointer  (2)]
+
+% xinput list-props 11 | grep -i scrol
+libinput Natural Scrolling Enabled (306):	1
+libinput Natural Scrolling Enabled Default (307):	0
+libinput Scroll Methods Available (308):	1, 1, 0
+libinput Scroll Method Enabled (309):	1, 0, 0
+libinput Scroll Method Enabled Default (310):	1, 0, 0
+libinput Accel Custom Scroll Points (324):	<no items>
+libinput Accel Custom Scroll Step (325):	0.000000
+libinput Horizontal Scroll Enabled (329):	1
+libinput Scrolling Pixel Distance (330):	30
+libinput Scrolling Pixel Distance Default (331):	15
+libinput High Resolution Wheel Scroll Enabled (332):	1
+
+xinput set-prop 'ZNT0001:00 14E5:E545 Touchpad' 'libinput Scrolling Pixel Distance' 50
+
+* TODO Thunderbird Import mbox                                        :noexport:
+
+In thunderbird you can open the file by placing it in thunderbirds local profile folder, under $HOME/.thunderbird/<profilename>.default/Mail/Local Folders/ An .mbox file there will be picked up by Thunderbird and displayed.
+
+* TODO Samsung Galaxy Pro Audio                                       :noexport:
+
+https://forum.manjaro.org/t/howto-set-up-the-audio-card-in-samsung-galaxy-book/37090
+
+This [HowTo] has been extensively tested on the Galaxy Book FLEX but should work on the ION and hopefully other models too.  The instructions have a script (TO912.sh) with important verbs and then some services to auto-load it on boot and keep it alive.
+
+Check and make sure your active kernel is 5.8.18 or higher (lower Kernel may work, but I only tested on 5.4.72 which failed)
+
+Tried Claude and some of the following worked:
+
+Audio issues on Arch Linux can have several causes. Here are the most common troubleshooting steps:
+
+**Check if audio devices are detected:**
+```bash
+lspci | grep -i audio
+lsusb | grep -i audio
+```
+
+**Verify ALSA is working:**
+```bash
+aplay -l
+# Test audio output
+speaker-test -t wav -c 2
+```
+
+**Check PulseAudio/PipeWire status:**
+```bash
+# For PulseAudio
+pulseaudio --check -v
+systemctl --user status pulseaudio
+
+# For PipeWire (if you're using it)
+systemctl --user status pipewire pipewire-pulse
+```
+
+**Common fixes:**
+
+1. **Install audio packages** (if missing):
+```bash
+sudo pacman -S alsa-utils pulseaudio pulseaudio-alsa
+```
+
+2. **Unmute audio channels:**
+```bash
+alsamixer
+# Use arrow keys to navigate, 'M' to unmute channels
+```
+
+3. **Add your user to audio group:**
+```bash
+sudo usermod -a -G audio $USER
+# Log out and back in
+```
+
+4. **Restart audio services:**
+```bash
+systemctl --user restart pulseaudio
+# or
+pulseaudio -k && pulseaudio --start
+```
+
+Since you mentioned it's a Samsung Galaxy Pro 2, there might be specific hardware quirks. What's the output of `lspci | grep -i audio` and are you getting any error messages when testing audio?
+
+Good, your Intel audio controller is detected. Let's check if the drivers are loaded and configured properly:
+
+**Check if the snd-hda-intel module is loaded:**
+```bash
+lsmod | grep snd_hda_intel
+```
+
+**Check available audio devices:**
+```bash
+aplay -l
+cat /proc/asound/cards
+```
+
+**Try loading the Intel HDA driver explicitly:**
+```bash
+sudo modprobe snd-hda-intel
+```
+
+**Check dmesg for audio-related errors:**
+```bash
+dmesg | grep -i audio
+dmesg | grep -i snd
+dmesg | grep -i hda
+```
+
+**For Intel Alder Lake specifically, you might need:**
+```bash
+# Install SOF firmware (often needed for newer Intel audio)
+sudo pacman -S sof-firmware
+```
+
+**If PulseAudio is running, check output devices:**
+```bash
+pactl list short sinks
+pactl info
+```
+
+Intel Alder Lake audio sometimes requires the SOF (Sound Open Firmware) driver instead of the traditional HDA driver. After installing `sof-firmware`, reboot and test again.
+
+What do you see when you run `aplay -l` and `lsmod | grep snd`? This will help identify if it's a driver loading issue or a configuration problem.
+
+** Install sof-firmware:
+
+#+begin_src
+sudo pamac install sof-firmware Install alsa-tools
+
+sudo pacman -S alsa-tools Get snd_soc_skl_hda_dsp to load:
+
+sudo nano /etc/modprobe.d/sof.conf add the following line, then save
+and exit: options snd slots=snd_soc_skl_hda_dsp
+
+Blacklist snd-hda-intel:
+
+sudo nano /etc/modprobe.d/blacklist.conf add the following line, then
+save and exit: snd-hda-intel
+
+Rename alsa-base to backup
+
+sudo mv /etc/modprobe.d/alsa-base.conf
+/etc/modprobe.d/alsa-base.conf.backup Create a file `TO912.sh and
+place hda-verb commands: Copy the contents of
+https://pastebin.com/raw/zsXp2vz6 38, then run this terminal command:
+
+sudo nano TO912.sh Paste the copied contents to this file, save and
+exit.
+
+Move the TO912.sh script and place it in /home/$USER/scripts (Create
+the folder /home/$USER/scripts if it does not exist)
+
+Set script permissions as read, write, executable for all:
+
+chmod a+rwx /home/$USER/scripts/TO912.sh create and edit
+ionsound.service file
+
+sudo nano /etc/systemd/system/ionsound.service add the following text,
+then save and exit:
+
+[Unit] Description=Custom Sound
+
+[Service] Type=idle ExecStart=/home/YOURUSER/scripts/TO912.sh
+
+[Install] WantedBy=multi-user.target set file permissions to allow
+everyone to read:
+
+sudo chmod a+r /etc/systemd/system/ionsound.service create and edit
+the ionsoundsleep.service file
+
+sudo nano /etc/systemd/system/ionsoundsleep.service add the following
+text, then save and exit:
+
+[Unit] Description=Custom Sound Sleep Fix
+
+[Service] Type=idle ExecStart=/home/YOURUSER/scripts/TO912.sh
+
+[Install] WantedBy=suspend.target set file permissions to allow
+everyone to read:
+
+sudo chmod a+r /etc/systemd/system/ionsoundsleep.service activate both
+new services:
+
+sudo systemctl daemon-reload sudo systemctl enable ionsound.service
+sudo systemctl enable ionsoundsleep.service Turn off PulseAudio:
+
+sudo nano /etc/pulse/default.pa find the following line: load-module
+module-suspend-on-idle
+
+and change it to (comment it out):
+
+###load-module module-suspend-on-idle
+
+reboot
+
+Launch alsamixer in the terminal and modify volumes:
+
+alsamixer press F6, ensure the sof-hda-dsp sound card is listed,
+select it increase the volume in all the columns, ensure the db Gain
+(displayed at the top left corner) never exceeds 0.00 click the
+speaker icon in the systray and ensure the speaker is not muted,
+unmute it if it is
+
+right click the speaker icon in the systray click Configure Audio
+Volume click Audio click advanced ensure the Output drop-down has
+Smart Sound Technology AUdio Controller Speaker + Headphone Test the
+sound
+
+References:
+
+https://bugzilla.kernel.org/show_bug.cgi?id=207423 6 Bug #1851518
+“[950SBE/951SBE, Realtek ALC298, Speaker, Internal]...” : Bugs : linux
+package : Ubuntu 8 Multiple hardware items UNCLAIMED and no sound
+(Dummy output) - Linux Mint Forums 3 Special thanks:
+
+MrEen from the Mint forums, jhubuntu20 from the Ubuntu forums,
+@bogdancovaciu from here.  Also big thanks to Mike Pozulp from
+kernel.org forum, especially for creating the kernel patch/quirk for
+the headsets of these models.
+#+end_src
+
+* TODO Clean ShutDown                                                 :noexport:
+
+** To ensure a clean shutdown with no hanging
+
+*** Default Timeout
+
+Modify /etc/systemd/system.conf
+
+#+begin_src
+DefaultTimeoutStartSec=10s
+DefaultTimeoutStopSec=10s
+DefaultTimeoutAbortSec=10s
+#+end_src
+
+*** Remove watchdog
+
+A watchdog is a process that checks that a system is stable and running, but we really don't need this.
+
+Modify /etc/systemd/system.conf
+
+#+begin_src
+RuntimeWatchdogSec=0
+RebootWatchdogSec=0min
+KExecWatchdogSec=0
+WatchdogDevice=
+#+end_src
+
+Add watchdog to module blacklist:
+
+#+begin_src
+/etc/modprobe.d/blacklist.conf
+blacklist iTCO_wdt
+#+end_src
+
+Add nowatchdog to grub startup in /etc/default/grub
+
+#+begin_src
+GRUB_CMDLINE_LINUX_DEFAULT="nowatchdog apparmor=1 security=apparmor
+udev.log_priority=3"
+#+end_src
+
+*** Tidy services
+
+I noticed that when I implemented the fast emacs start server/client model the shutdown was hanging.
+
+Check services in ~/.config/systemd/user
+
+After creating the emacs server potentially remove the closedown command
+
+*** Umount nas
+
+Maybe try a shutdown script to sudo umount ~/nas
+
+* TODO SSH                                                            :noexport:
+
+** github
+
+Firstly we need to generate a key pair one private one stored in *id_rsa* or *id_ed25519* in the .ssh folder dependant on the encryption type created by the following command:
+
+This is generated on the local system, or the native linux machine.
+
+#+begin_src bash
+  ssh-keygen -t ed25519 -C "james@dyerdwelling.family"
+#+end_src
+
+so this produces the following files:
+
+#+begin_src
+id_ed25519
+id_ed25519.pub
+#+end_src
+
+The .pub file needs to be copied to the remote host and added to the *authorized_keys* with a simple cat >> that means the remote server has a copy of the public key to provide authentication.
+
+In the case of git it will be to add this key into the security section.
+
+I am assuming that if the -t rsa parameters were passed into ssh-keygen then our already generated private key would have been used.
+
+Now the public key is copied to the remote system we need to add the key-pairing to the ssh agent I think mainly if a passphrase is also included which adds an extra level of security to auto login.
+
+#+begin_src bash
+  eval "$(ssh-agent -s)"
+  ssh-add ~/.ssh/id_ed25519
+#+end_src
+
+Next up is to force adding a line to the known_hosts files, to do this connect directly to the service you are to log into or in the case of github get the ssh link from Code which might run something like:
+
+#+begin_src bash
+  git clone git@github.com:captainflasmr/dotfiles.git
+  Cloning into 'dotfiles'...
+  The authenticity of host 'github.com (140.82.121.4)' can't be established.
+    ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
+    This key is not known by any other names.
+    Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+    Warning: Permanently added 'github.com' (ED25519) to the list of known hosts.
+    remote: Enumerating objects: 3, done.
+    remote: Counting objects: 100% (3/3), done.
+    remote: Total 3 (delta 0), reused 0 (delta 0), pack-reused 0
+    Receiving objects: 100% (3/3), done.
+#+end_src
+
+Now running magit on the folder checked out enables a correct push with no passwords or usernames required!!
+
+Still not sure how to gain access to the user ssh agent yet, a little confused between Kleopatra (might be just emails / certification) / GPG / openssh / polkit / KDEWallet e.t.c
+
+If you have to input a username then:
+
+#+begin_src
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+#+end_src
+
+Pushing to https://github.com/captainflasmr/emacs-sane-defaults
+Username for 'https://github.com': Password for 'https://captainflasmr@github.com':
+remote: Support for password authentication was removed on August 13, 2021.
+remote: Please see https://docs.github.com/en/get-started/getting-started-with-git/about-remote-repositories#cloning-with-https-urls for information on currently recommended modes of authentication.
+fatal: Authentication failed for 'https://github.com/captainflasmr/emacs-sane-defaults/'
+
+Well if you get this then you need to check out the ssh git link, for example:
+
+git@github.com:captainflasmr/dotfiles.git
+
+and not
+
+https://github.com/captainflasmr/dotfiles.git
+
+** web page
+
+Pretty much the same as github to set up
+
+
+#+begin_src
+sshfs -p 7822 dyerdwel@www.dyerdwelling.family:/home/dyerdwel mnt/
+
+rsync -rltsipP public-blog/ ~/mnt/blog.dyerdwelling.family/
+rsync -rltsipP public-blog/ dyerdwel@www.dyerdwelling.family:blog.dyerdwelling.family/
+#+end_src
+
+on first install the following is raised:
+
+#+begin_src
+rsync error: unexplained error (code 255) at io.c(228) [sender=v3.2.3]
+Bad owner or permissions on ~/.ssh/config
+rsync: connection unexpectedly closed (0 bytes received so far) [sender]
+#+end_src
+
+Typically you want the permissions to be:
+
+#+begin_src
+.ssh directory: 700 (drwx------)
+public key (.pub file): 644 (-rw-r--r--)
+private key (id_rsa): 600 (-rw-------)
+#+end_src
+
+lastly your home directory should not be writeable by the group or others (at most 755 (drwxr-xr-x)).
+
+#+begin_src
+chmod 700 .ssh
+cd .ssh/
+chmod 600 *
+#+end_src
+
+** ftp
+
+If ssh for some reason doesn't seem to work very well then ftp can always be used through FileZilla
+
+** Wallet
+
+Pretty much need to import the encrypted one from Documents/wallet and all issues are solved!!
+
+also set the following permissions:
+
+#+begin_src
+cd $HOME
+find ~/.gnupg -type f -exec chmod 600 {} \;
+find ~/.gnupg -type d -exec chmod 700 {} \;
+#+end_src
+
+** Phone
+
+Accessing via termux
+
+follow the above instructions adding the *.pub string to authorized_keys on my phone the key may be getting the correct IP, which can be found in Settings -> About Phone -> Status -> IP addresse -> 192.168.1.203
+
+and you should be able to ping this from my laptop
+
+also getting the correct use to login for example run =whoami= in termux to find *u0_a219* and remember that the port number on termux is always 8022 and not 22
+
+Also termux doesn't run the ssh daemon by default so run:
+
+#+begin_src bash
+  pkill sshd
+  sshd
+#+end_src
+
+ssh -p 8022 u0_a219@192.168.1.203
+The authenticity of host '[192.168.1.203]:8022 ([192.168.1.203]:8022)' can't be established.
+ED25519 key fingerprint is SHA256:ov2/4hJA3lCfCpVqGPcyHIuEbTlkTdu06A5M5UJcBPc.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '[192.168.1.203]:8022' (ED25519) to the list of known hosts.
+Welcome to Termux!
+
+Docs:       https://termux.dev/docs
+Donate:     https://termux.dev/donate
+Community:  https://termux.dev/community
+
+Working with packages:
+
+- Search:  pkg search <query>
+- Install: pkg install <package>
+- Upgrade: pkg upgrade
+
+Subscribing to additional repositories:
+
+- Root:    pkg install root-repo
+- X11:     pkg install x11-repo
+
+For fixing any repository issues,
+try 'termux-change-repo' command.
+
+Report issues at https://termux.dev/issues
+~ $ pwd
+/data/data/com.termux/files/home
+
+to gain access to the phones storage we need to grant access, in termux run:
+
+termux-setup-storage
+
+and accept the permissions on the phone
+
+now you can cd /storage and in fact when you tramp in storage appears in the home folder
+
+and now to shortcut the connection just add the following to .ssh/config
+
+#+begin_src
+Host phone
+     Hostname	192.168.1.203
+     Port	8022
+     User	u0_a219
+#+end_src
+
+*** tramp
+
+/ssh:u0_a219@192.168.1.203#8022:
+
+the key here is passing in the port number, now I have access to my phones contents!!!
+
+* TODO Security Camera                                                :noexport:
+
+Note that the video files are generally in h265 HEVC format.
+
+** Configure
+
+- Insert SD card into camera
+- Plug in to router and power
+- Open Chrome on Windows setting up local device stuff
+- Log in to IP
+- Enable recording to continuous
+- Set stream settings to no audio
+
+** Record
+
+Unplug from router and move camera + power supply to location turn on and position making sure double red light initially turns on Make sure up is pointing up
+
+** Snapshotting
+
+Open Chrome on Windows setting up local device stuff
+
+Log in to IP
+
+Hopefully there will be a Playback tab, if not fiddling around with plug ins and firewalls maybe required as by default the Playback and Picture tabs do not appear on any other browser, need a clean Chrome Scrub through playback and clip (scissors) the video part you want Copy the generated mp4 file from stored location In linux use ffmpeg to convert to 265
+
+* DONE Rescuing a Flaky JMicron USB Backup Drive That Kept Going Read-Only :2026:backup:usb:uas:ext4:fsck:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260620190000-linux--Rescuing-a-Flaky-JMicron-USB-Backup-Drive-That-Kept-Going-Read-Only
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2026-06-20 19:00>
+:END:
+
+My external USB backup drive started misbehaving: it took ages to mount, sometimes did not mount at all, and when it did mount it would flip itself to *read-only* within seconds.  It turned out to be two problems feeding each other -- a buggy USB-to-SATA bridge and a corrupted ext4 filesystem -- and crucially they had to be fixed *in the right order*, or the repair simply would not stick.
+
+#+hugo: more
+
+The drive (=/dev/sda1=, ext4, label =Backup=, mounted at =/run/media/jdyer/Backup=) appeared to mount fine, then a write test would fail:
+
+#+begin_src bash
+touch /run/media/jdyer/Backup/.writetest
+# touch: cannot touch ...: Read-only file system
+#+end_src
+
+The mount table still claimed =rw=, but the kernel had silently remounted it read-only to protect the data.  The kernel log told the real story.
+
+A look through the kernel ring buffer revealed both problems at once:
+
+#+begin_src bash
+sudo dmesg | grep -iE 'sda|uas|usb-storage|EXT4'
+#+end_src
+
+*Problem 1 -- the filesystem was corrupt.*  Seconds after mounting, ext4 aborted its journal and went read-only:
+
+#+begin_src text
+EXT4-fs error (device sda1): ext4_validate_block_bitmap: bg 125: bad block bitmap checksum
+Aborting journal on device sda1-8.
+EXT4-fs (sda1): Remounting filesystem read-only
+#+end_src
+
+The =errors=remount-ro= mount option is doing its job here -- detecting metadata corruption and flipping read-only rather than risk writing more garbage.
+
+*Problem 2 -- the USB bridge kept dropping out.*  The enclosure uses a *JMicron 152d:a578* bridge running in UAS (USB Attached SCSI) mode, and its firmware is buggy:
+
+#+begin_src text
+uas_eh_device_reset_handler FAILED err -19
+Synchronize Cache failed: hostbyte=DID_NO_CONNECT
+usb 4-2: USB disconnect
+#+end_src
+
+JMicron bridges are notorious for flaky UAS firmware.  That disconnect-mid-write is almost certainly what corrupted the filesystem in the first place -- which means repairing the filesystem *without* fixing the bridge would just let it happen again.
+
+Before trusting the drive with backups, I confirmed the physical disk was healthy with SMART:
+
+#+begin_src bash
+sudo pacman -S smartmontools
+sudo smartctl -a /dev/sda
+#+end_src
+
+The numbers that matter were all pristine:
+
+#+begin_src text
+SMART overall-health self-assessment test result: PASSED
+  5 Reallocated_Sector_Ct    0
+197 Current_Pending_Sector   0
+198 Offline_Uncorrectable    0
+199 UDMA_CRC_Error_Count     0
+#+end_src
+
+So the platter was fine.  The corruption was the *bridge*, not failing media -- exactly the right conclusion to commit to before doing anything destructive.
+
+This is the bit that caught me out.  My first instinct was to unmount and run =e2fsck= straight away:
+
+#+begin_src bash
+umount /run/media/jdyer/Backup
+sudo e2fsck -f -y /dev/sda1
+#+end_src
+
+It fixed "some things" and a second pass reported clean.  But after a replug the *exact same* =bg 125= error came straight back.  Running =e2fsck= over the still-unstable UAS link is worse than useless: its repair writes were being dropped or never flushed, so the "clean" result was a lie -- the platter still held the corruption.
+
+*Fix the bridge first.*  The cure for the JMicron UAS bug is a usb-storage quirk that forces the slower-but-stable BOT (Bulk-Only Transport) mode instead of UAS:
+
+#+begin_src bash
+echo 'options usb-storage quirks=152d:a578:u' | sudo tee /etc/modprobe.d/usb-quirks.conf
+#+end_src
+
+After a reboot, confirm the quirk took effect:
+
+#+begin_src bash
+dmesg | grep -i uas
+# usb 4-2: UAS is ignored for this device, using usb-storage instead
+# usb-storage 4-2:1.0: Quirks match for vid 152d pid a578: 800000
+#+end_src
+
+No more =uas_eh_device_reset= or =DID_NO_CONNECT= lines -- the connection was finally stable.
+
+*Then repair the filesystem.*  With a reliable link, =e2fsck= could finally do real work:
+
+#+begin_src bash
+umount /run/media/jdyer/Backup
+sudo e2fsck -f -y /dev/sda1
+#+end_src
+
+This time it found a *huge* amount of damage the earlier bogus run had never touched -- salvaging corrupted directories, fixing hundreds of inode reference counts, and reconnecting around 5,800 orphaned inodes to =/lost+found=.  The file count jumped from 1,677 to 7,544.  Use =-f= to force a full check: a journal abort can leave the superblock looking "clean" so a normal fsck would skip it.
+
+A repair pass that large *must* be followed by a confirming pass.  Run =e2fsck= a third time and check it ends with no =Fix?= prompts and no =FILE SYSTEM WAS MODIFIED=:
+
+#+begin_src text
+Pass 1: Checking inodes, blocks, and sizes
+...
+Pass 5: Checking group summary information
+Backup: 7544/61054976 files (1.1% non-contiguous), 62904596/244190208 blocks
+#+end_src
+
+Identical counts and no modifications -- proof the repair persisted, which over the old UAS link it never did.
+
+A few practical notes once everything was clean:
+
+- =/lost+found= now holds thousands of recovered files with numeric names.  Because this is a *backup* drive the originals still live on the source, so the cleanest fix is just to re-run the backup and let it restore the proper structure, then clear =lost+found= afterwards.
+- That first =rsync= after an fsck re-copies everything, because the repair changes metadata timestamps.  It settles back to fast incremental runs afterwards -- not a cause for alarm.
+- Keep the =/etc/modprobe.d/usb-quirks.conf= file in place permanently.  It is the thing that actually fixed the root cause; without it the corruption would simply return.
+
+** The lesson
+
+When a USB disk goes intermittently read-only, resist the urge to reach straight for =fsck=.  Check =dmesg= for UAS resets and disconnects first, rule out the disk with SMART, and *stabilise the connection before you repair the filesystem* -- otherwise you are just writing repairs into a void.
+
+* DONE SwayFX Losing Corners                                  :swayfx:sway:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231015145222-linux--SwayFX-Losing-Corners
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-11-19 11:08>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231015145222-emacs--SwayFX-Losing-Corners.jpg
+:END:
+I seemed to temporarily lose the rounded corners in *SwayFX* and I think the reason for this is that the gaps inner need to be a certain width, for example the following doesn't seem to work:
+#+hugo: more
+
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231015145222-emacs--SwayFX-Losing-Corners.jpg]]
+
+=gaps inner 8px=
+
+but the following does!:
+
+=gaps inner 10px=
+
+* DONE Battery Laptop Optimisations on Garuda Linux         :laptop:garuda:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231117204853-linux--Running-Linux-On-Laptop-Powersave
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-11-17 20:48>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231117204853-emacs--Running-Linux-On-Laptop-Powersave.jpg
+:END:
+There are quite a few different ways to reduce power consumption on a laptop, most linux distros will be geared towards desktop, but I am always installing on a laptop, generally I was looking to use *tlp* but the options are quite bewildering and can be daunting so I was looking for something more lightweight and in fact *garuda* has a good starting point for this:
+#+hugo: more
+#+attr_org: :width 300px
+#+attr_html: :class emacs-img
+[[file:static/linux/20231117204853-emacs--Running-Linux-On-Laptop-Powersave.jpg]]
+
+Table Of Contents
+---
+#+TOC: headlines 2 local
+---
+
+https://forum.garudalinux.org/t/guide-old-opinion-configuring-garuda-linux-for-laptop/7685
+
+** auto-cpufreq
+
+I chose to use =auto-cpufreq= and it encourages you to manually install, so:
+
+#+begin_src bash
+  git clone https://github.com/AdnanHodzic/auto-cpufreq.git
+  cd auto-cpufreq && sudo ./auto-cpufreq-installer
+#+end_src
+
+and then I just ran the GUI version and installed the systemd unit which will be activated now on every startup.
+
+** intel_pstate=passive
+
+There maybe other things I can do in the future, for example regarding:
+
+#+begin_src
+intel_pstate=passive
+#+end_src
+
+OR
+
+#+begin_src
+acpi_backlight=native
+#+end_src
+
+It looks like you put this on the end of the kernel run up at GRUB time as in my Samsung brightness fix to GRUB_CMDLINE_LINUX_DEFAULT
+
+Garuda Welcome -> Garuda Boot Options
+
+However on an initial test using emacs at rest the cpu was averaging around 10% and even the window navigation felt laggy.  I suspect it may be conflicting with =auto-cpufreq= which is often the way these power-saving tools are concerned.
+
+** brightness fix
+
+ Here's what I recommend doing (both require root):
+
+  1. Add acpi_backlight=native to GRUB — this prevents the ACPI video subsystem from conflicting with the native Intel backlight driver:
+
+  Run: ! sudo sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 acpi_backlight=native"/' /etc/default/grub && sudo grub-mkconfig -o /boot/grub/grub.cfg
+
+  2. Add a udev rule so your video group can control brightness without root. Run:
+
+     #+begin_src
+     echo 'ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"' | sudo tee /etc/udev/rules.d/90-backlight.rules
+     #+end_src
+
+comes back with:
+
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
+  
+  3. After a reboot, brightness control should work. To wire up the Fn keys in Sway, add to your Sway config:
+
+  bindsym XF86MonBrightnessUp exec brightnessctl set +5%
+  bindsym XF86MonBrightnessDown exec brightnessctl set 5%-
+
+  The acpi_backlight=native param is the critical one — without it, the ACPI firmware keeps claiming the backlight interface and the kernel can't read or set actual values. Want me to
+  apply the GRUB edit directly if you can run those as root in the terminal?
+
+** turning of bluetooth
+
+Bluetooth is of course very power efficient but that I am assuming this is just the transfer protocol? what about the actual device on board?, I don't ever need to use this so it is worth considering just disabling in =systemd=
+
+* DONE Guide to Creating an Advent Calendar                        :advent:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20231001155909-linux--Advent-Calendar-Creation
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: <2023-10-18 15:50>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20231001155909-emacs--Advent-Calendar-Creation/advent-calendar--2023-windows__work_front.jpg
+:END:
+Here are the steps to create a new advent calendar.
+#+hugo: more
+** template
+
+Get the latest template from:
+#+begin_src
+nas/Art/Projects/AdventCalendar/advent-calendar--template.kra
+#+end_src
+
+Copy into a new directory of the named convention:
+#+begin_src
+advent-calendar--2023-windows__work.tar.gz
+#+end_src
+
+** get images
+
+Get the calendar door images using a ratio of screenshot dimensions 600:420, for example in wayland =Win-S-s=:
+#+begin_src
+slurp -a 600:420 -d | grim -g - ~/DCIM/Screenshots/$(date +'%Y-%m-%d-%H-%M-%S.jpg')
+#+end_src
+
+Put each image into the =img= subfolder.
+
+** resize images
+
+The images will be of the correct ratio but not necessary the correct =600:420= size so scale up using =Upscayl= in batch mode.
+
+Now set all image thumbnails to the following size.
+
+=PictureScale= performs a straightforward resize
+
+If for some reason the image is not of the correct ratio then =PictureCrop= can be used to get the middle portion to the correct ratio and then resize.
+
+For all images in =img= run =PictureCorrect= to convert to jpg and to truncate the names.
+
+** import images
+
+Open the template =kra= file in Krita and drag and drop all image files into new layers.
+
+Using the move tool with moving content move all images under the transparent doors.
+
+Import the background image and tweak the calendar to taste.
+
+** export
+
+In Krita create a =front= and =back= layer and export to jpg images.
+
+** print
+
+To print open up the =front= and =back= images into GIMP as Krita currently doesn't support printing and increase the contrast and brightness using:
+*Filter->Adjust->Colour Adjustment Curves*
+
+Print using the following settings:
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_a.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_b.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_c.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_d.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_e.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/linux/20231001155909-emacs--Advent-Calendar-Creation/20231001155909-emacs--Advent-Calendar-Creation_f.jpg]]
+
+** create
+
+Now the A3+ images typically on photo paper have been printed out then first cut out the windows with a crafting knife.
+
+Now apply a prit stick glue to the back of the cut out front windows and apply it to the back image
+
+Trim the edges using a guillotine and stick the edges together using cello-tape.
+
+* DONE Digital Art Printing                                      :printing:2023:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20230305194837-linux--Digital-Art-Printing
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2023-03-05 20:02
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195402.jpg
+:END:
+Once a digital piece of art has been created then it is time to print it.  A few tweaks are required in my image editor of choice and that is GIMP.
+#+hugo: more
+
+Import the image into GIMP and perform the following to tweak the image so the printed image is as close to the digital image as possible:
+
+- exposure : 1.3
+- brightness-contrast : 10
+- saturation : 1.24
+
+and now to print, here are the typical setting that will work:
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195253.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195303.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195337.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195343.jpg]]
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20230305194837-emacs--Digital-Art-Printing/Screenshot_20230305_195402.jpg]]
+
+I tend to print on glossy photo paper these days but generally I think it is best to select Photo / Photo paper as these tend to produce the better results.
+
+* DONE Creating a DVD from a video file                           :vhs:dvd:2022:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20221222210546-linux--Burning-To-DVD
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2022-12-26
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/2022-12-26_15-35_1_t.jpg
+:END:
+This year I have been starting to archive anything of interest from the family VHS collection.  There are certainly slim pickings and it is difficult to find anything when most of the 200+ videos contains either a western or a Dire Straits concert!
+#+hugo: more
+
+#+attr_org: :width 300px
+#+attr_html: :height 100px
+#+attr_html: :width 300px
+[[file:static/linux/20221222210546-linux--Burning-To-DVD/2022-12-26_15-35_1.jpg]]
+
+But I did find a film that my mum loves and she really doesn't want to lose, so what better way than to burn a captured video file to DVD and what better way than to use free and open software on linux to achieve this.  (I will go into how I captured the video at a later date)
+
+---
+
+I have an mp4 file of 2.5G and went straight to a program I was moderately familiar with, and that is k3b
+
+#+begin_quote
+K3b is a full-featured CD/DVD/Blu-ray burning and ripping application.
+#+end_quote
+
+In the past I have utilised it to rip and burn CDs but never DVDs, but I am aware it has this functionality.  However in this case I was really starting to struggle to figure out how to do this.  In k3b I selected a Video DVD project, dragged and dropped my video file and then just burnt hoping that my DVD would be created.  But nothing really happened.
+
+It then started to dawn on me that in the past I have created DVDs using paid propriety products, namely things like Cyberlink PowerDVD and I suspect they perform some other processing on my basic video file before performing the burn.
+
+A basic Video DVD project in k3b contained two folders that had been automatically created:
+
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20221222210546-linux--Burning-To-DVD/2022-12-26_15-35.jpg]]
+
+On further investigation through the k3b documentation it states the following:
+
+#+begin_quote
+Create Video DVDs\\
+\\
+The creation of data DVDs is handled in the same manner that audio CDs is done. These types of DVDs are good for data backup. If you are wanting to create a Video DVD, the steps are a bit different. First of all you will have to have your Video files ready. K3B does well with DVD projects that have been split into the AUDIO_TS and VIDEO_TS directories that programs like DeVeDe can create. When you have your project files/directories created you can then create your Video DVD following these steps...
+#+end_quote
+
+Aha!, so in fact I need to convert my mp4 file to a DVD ready format through *DeVeDe*!  Not obvious, but ok.  This software is in the official arch repositories, so I download, run up, create a *Video DVD* project, drag and drop the mp4 and just navigate through the next steps to generate files into an AUDIO_TS and VIDEO_TS folder.
+
+#+attr_org: :width 300px
+#+attr_html: :width 300px
+[[file:static/linux/20221222210546-linux--Burning-To-DVD/2022-12-26_15-34.jpg]]
+
+By default Devede creates an output =movie= folder in your home directory and the AUDIO_TS and VIDEO_TS folders are located in the =dvd_tree= subdirectory.  Presumably the other folders are for a more complicated DVD setup including menu functionality, but this will be a simple present and I'm not interested in anything fancy I just want a film to be played on a DVD player.
+
+So the final step is to go back to k3b, continue with a Video DVD project and drag and drop the AUDIO_TS and VIDEO_TS folders generated by Devede straight in to the equivalent auto created directories and then burn to disk following the steps as instructed.
+
+It worked!, I tested it on a couple of DVD players and the video file has now been successfully deployed, yay!
+
+* DONE Hugo Text Title Tidying                                       :hugo:2022:
+:PROPERTIES:
+:EXPORT_FILE_NAME: linux--hugo-text-title-tidying__linux_hugo
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2022-09-02
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/linux--hugo-text-title-tidying__linux_hugo.jpg
+:END:
+Currently I am just displaying the title of my posts with no filtering.  Now that I have developed a general format to help with some emacs Deft categorisation I have run into a little bit of a problem.
+
+#+hugo: more
+
+#+attr_org: :width 100px
+#+attr_html: :width 100%
+[[file:static/linux/linux--hugo-text-title-tidying__linux_hugo.jpg]]
+
+For example a typical title format is the following:
+
+#+begin_example
+  Linux ---> Hugo_Format_Title[tag@subtag-art]
+#+end_example
+
+and the hugo rendered html of course displays this on a card list and on a single page.  I would like to remove the =Linux --->= part and the tag part to optimise the space taken up by the title.
+
+I am simply just using:
+
+#+begin_example
+{{ .Title) }}
+#+end_example
+
+which gives the full title.
+
+I want to utilise hugo functions to trim off the front up to the first =->= and to remove the tag part including the closing brackets.
+
+*replaceRE* seems perfect for this to search and replace using regular expressions, so lets give this a go:
+
+#+begin_example
+{{ replaceRE "^.*->|\\[.*\\]" "" .Title }}
+#+end_example
+
+this gives me:
+
+#+begin_example
+Hugo_Format_Title
+#+end_example
+
+the only issue I had was to figure out how to escape the bracket character, usually in a regex it is just one backslash, but unfortunately that gave a parse error.  But this can be solved by a double backslash.
+
+Note the use of the pipe character to remove both the prepend with the tags and the removal takes place by defining a replacement string of empty double quotes.
+
+But there is a final thing left to do which I had completely forgotten about, to really tidy up the title I would like to replace the underscores with spaces.  I can't add in another piped OR command as the replacement string has to be a single space and not deleting the text.
+
+The solution is to create a compound nested statement, as thus:
+
+#+begin_example
+{{ replaceRE "_" " " (replaceRE "^.*->|\\[.*\\]" "" .Title) }}
+#+end_example
+
+so the output string of the original substitution can be fed into another occurrence of *replaceRE*
+
+So the final title is
+
+#+begin_example
+Hugo Format Title
+#+end_example
+
+This is much neater!
+
+* DONE Hugo No Carriage Return After Frame                           :hugo:2022:
+:PROPERTIES:
+:EXPORT_FILE_NAME: linux--hugo-no-carriage-return-after-frame__linux_hugo
+:EXPORT_HUGO_SECTION: linux
+:EXPORT_HUGO_LASTMOD: 2022-09-01
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /linux/linux--hugo-no-carriage-return-after-frame__linux_hugo.jpg
+:END:
+I am currently polishing up my web page and I am now focussing on the little annoying formatting / alignment issues.
+
+#+hugo: more
+
+One of these is involving a default shortcode called ={< youtube >}=
+
+(*Note*: I deliberately missed off second brace as I am writing this in org!)
+
+Anyways, I have the following markdown:
+
+#+begin_example
+{< youtube IDK-4lhQ-sE >}
+
+A gradual fading version of a portrait I did for my girlfriends
+parents.
+
+Using ArtRage and Infinite Painter on various drawing tablets
+#+end_example
+
+which produces the following displayed html:
+#+attr_org: :width 100px
+#+attr_html: :width 100%
+[[file:static/linux/linux--hugo-no-carriage-return-after-frame__linux_hugo/2022-09-01_11-02.jpg]]
+
+Note how the text starts right after the youtube video even though the markdown includes a carriage return.
+
+So the first potential fix is to add a =<br>= just after the shortcode, which in fact does work, however there is one catch.  The markdown file is just one of hundreds I have generated from my youtube channel.  If I add this then I will have to apply it to all videos.
+
+I maintain a list of my youtube videos in a single org file and technically it probably wouldn't be too difficult to emacs macro / grep / replace my way through it, however I don't like this idea too much as I don't really want to be mixing html with a markdown file.
+
+So on to plan B.
+
+With a little investigation I can see that the video is embedded in an iframe.  This presents the possibility of a quick and dirty fix that may have repercussions down the line.
+
+Lets add in a little css:
+
+#+begin_src
+iframe {
+    padding: 0rem 0rem 1rem 0rem;
+    margin: 0rem 0rem 0rem 0rem;
+}
+#+end_src
+
+I have just applied a little padding to the bottom of the iframe!  I thought I would include =margin= also just in case I wanted to do it that way in the future.  Right lets see what this looks like now:
+
+#+attr_org: :width 100px
+#+attr_html: :width 100%
+[[file:static/linux/linux--hugo-no-carriage-return-after-frame__linux_hugo/2022-09-01_11-16.jpg]]
+
+yup that will do nicely!
+
+for now...
+
