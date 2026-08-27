@@ -1,0 +1,39 @@
+(use-package eglot
+   :ensure t
+   :hook (nxml-mode . eglot-ensure)
+   :config
+   (add-to-list 'eglot-server-programs
+                `(java-mode . ("/home/jdyer/.emacs.d/bin/jdtls/bin/jdtls"
+                               :initializationOptions
+                               (:bundles ["/home/jdyer/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
+
+   (add-to-list 'eglot-server-programs
+                '(nxml-mode . ("java" "-jar"
+                               "/home/jdyer/Downloads/org.eclipse.lemminx-uber.jar")))
+
+  ;; Disable resource-intensive features for the target system
+  (setq eglot-ignored-server-capabilities
+        '(
+          ;; :hoverProvider                    ; Documentation on hover
+          ;; :completionProvider               ; Code completion
+          ;; :signatureHelpProvider            ; Function signature help
+          ;; :definitionProvider               ; Go to definition
+          ;; :typeDefinitionProvider           ; Go to type definition
+          ;; :implementationProvider           ; Go to implementation
+          ;; :declarationProvider              ; Go to declaration
+          ;; :referencesProvider               ; Find references
+          ;; :documentHighlightProvider        ; Highlight symbols automatically
+          ;; :documentSymbolProvider           ; List symbols in buffer
+          ;; :workspaceSymbolProvider          ; List symbols in workspace
+          ;; :codeActionProvider               ; Execute code actions
+          ;; :codeLensProvider                 ; Code lens
+          ;; :documentFormattingProvider       ; Format buffer
+          ;; :documentRangeFormattingProvider  ; Format portion of buffer
+          ;; :documentOnTypeFormattingProvider ; On-type formatting
+          ;; :renameProvider                   ; Rename symbol
+          ;; :documentLinkProvider             ; Highlight links in document
+          ;; :colorProvider                    ; Decorate color references
+          ;; :foldingRangeProvider             ; Fold regions of buffer
+          ;; :executeCommandProvider           ; Execute custom commands
+          ;; :inlayHintProvider                ; Inlay hints
+          )))
