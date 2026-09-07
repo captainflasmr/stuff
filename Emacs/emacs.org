@@ -9,6 +9,40 @@
 #+exclude_tags: noexport
 #+filetags: :@emacs:@linux:
 
+* TODO Emacs 31 Does Git Worktrees Natively: How My vc Setup Compares :emacs:vc:git:worktree:2026:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260907140012-emacs--Emacs-31-Native-Git-Worktrees-vs-My-vc-Setup
+:EXPORT_HUGO_SECTION: emacs
+:EXPORT_HUGO_LASTMOD: <2026-09-07 Mon 14:00>
+:END:
+
+Well this is awkward timing. No sooner had I finished bolting worktree management onto built-in =vc= than I installed the bleeding edge and found Emacs 31 went and did it properly. Right there in the 31 NEWS: a whole =C-x v w= working-tree map, backed by real backend API. So before I get too attached to my own code I thought I had better do an honest head-to-head — I read the NEWS entries, read the implementation, and ran every command against scratch repos on a master build to make sure I am comparing against reality and not my assumptions. Verdict up front: I am keeping mine, with one key moved. Here is why.
+
+#+hugo: more
+
+First, what 31 actually ships. Note the terminology: upstream says "working tree" throughout, never "worktree". Eight bindings under =C-x v w=:
+
+- =w c= (=vc-add-working-tree=) prompts for a directory, then a branch: empty means detached =HEAD=, an existing branch is checked out, a new name creates it with a start point. Then it just stops — no status buffer, no =vc-dir=, you are on your own.
+- =w w= (=vc-switch-working-tree=) jumps to the /same file/ in another tree. Lovely idea, completely different from my switch-to-=vc-dir=.
+- =w k= (=vc-kill-other-working-tree-buffers=) kills buffers visiting this file elsewhere. Read that twice: it does /not/ delete the tree, despite the letter.
+- =w s= (=vc-working-tree-switch-project=) is =project-switch-project= limited to trees sharing the same backing repo, with a matching =project-find-matching-buffer= helper for hopping between same-named files.
+- =w a= and =w A= (=vc-apply-to-other-working-tree= and =vc-apply-root-to-other-working-tree=) copy a fileset's changes — or the whole tree's — into another tree, and with a prefix argument /move/ them. This is the Transplant mechanic and it is genuinely something mine cannot do.
+- =w x= (=vc-delete-working-tree=) deletes the directory outright (to trash) and prunes. No =--force= dance because there is no =git worktree remove= involved at all, which also means it works on ancient gits.
+- =w R= (=vc-move-working-tree=) relocates, and the implementation is cleverer than mine: on recent git it renames the directory and runs =worktree repair=, which means it can even move the /main/ tree, something plain =git worktree move= flatly refuses. Older gits fall back through =worktree move= to a clean version error.
+
+I verified the add, same-file jump and delete paths by driving them in batch mode, and they behave exactly as documented — with one rough edge worth knowing: the switch command assumes =project.el= is loaded and falls over with a void-variable error in a minimal session that never pulled it in. Fine in practice, but it tells you the feature grew up assuming a full desktop session.
+
+Now the head-to-head, feature by feature. Creating: theirs prompts bare directory-then-branch, mine offers a =project-branch= sibling default and lands you in =vc-dir=. Switching: theirs is file-grained, mine is status-buffer-grained — complementary, not competing. Listing: theirs has no list command at all beyond completion prompts (though the backend exposes =vc-git-known-other-working-trees= for lisp), while my =Z l= buffer stays. Pruning: no built-in command, mine stays. Moving: theirs is strictly better, full stop. Deleting: theirs is safer on old gits and trashes instead of destroying; mine understands =--force= and rescues a =vc-dir= sitting inside the dead tree. And branches — rename, delete, merge, list — have no built-in counterpart whatsoever; 31's branch work went into logging (more on that below), so my whole branch map stands unopposed.
+
+Under the bonnet the two implementations rhyme amusingly. Both parse =git worktree list --porcelain=, except theirs prunes first and uses =-z= output on git 2.36+, and both have a current-branch helper — mine via =branch --show-current=, theirs via =symbolic-ref HEAD=. Great minds and all that.
+
+So much for behaviour; now keys, because this is where it bit me. My maps live on =Z= (worktrees, Magit-style) and =b= (branches, stock-style). Against 31's =C-x v w= map: =w k= kills buffers where mine removes trees, and =w s= switches projects where mine opens =vc-dir= — same letters, different continents. That settled it: the =Z= prefix stays, precisely /because/ =w= is now taken with conflicting semantics, and note =vc-dir= itself has no built-in worktree keys at all, so =Z= there is uncontested territory. But the audit caught one genuine collision: 31 binds =C-x v b L= to the new =vc-print-root-branch-log=, which is exactly where my branch list sat. That has now moved to =b B= (for Branches) in both maps, and everything else verified collision-free against a master build.
+
+What I am stealing, or at least circling: the prune-before-listing habit is obviously right, the trash-first delete is kinder than =--force= bravado, and the repair-based move handling the main tree is something =git worktree move= simply cannot do. The changeset transplant (=w a=) is the one I may just use as-is rather than reimplement — some things are better borrowed than rebuilt. What I am not giving up: the =vc-dir=-first workflow, the sibling defaults, the list buffer, and the entire branch map, none of which upstream touches.
+
+Since I had the NEWS open anyway, here is the rest of what 31 (plus a little incoming 32) does for =vc=, because it is a bumper release and some of it is excellent. Log View grew teeth: =C= cherry-picks, =R= undoes a revision, =x= rewinds the branch past point (capital =X= also restores the files), and =e= can now edit Git commit messages in place. =vc-dir= got =V= to check in the whole buffer ignoring marks, =z d= and =D= to delete stashes, mass-mark prompting instead of stubborn refusals, mixed-fileset registration on checkin, saner missing-versus-removed handling, auto-hiding of up-to-date entries, Magit-style save-before-refresh, an outgoing-revision count in the header, directory-aware reverting on =@= (also =C-x v @=), file renaming on =C-x v R=, and unregistered-file deletion. Branch logs split in two: =b l= is now the fileset log and =b L= the root log. Review tooling is the quiet star: incoming, outgoing, unintegrated-against-merge-base and combined-local diffs and logs, with optional =I=, =O=, =T= and =E= prefix maps to hang them on. Safety improved with history-rewrite detection you must explicitly opt out of, per-backend conflict-resolution options, an auto-revert mode limited to tracked files, async checkins, and an interactive =vc-clone=. Mercurial users get changeset hashes in annotate and working-revision instead of local revision numbers. On master, the outgoing count went asynchronous, =vc-dir= shows key hints, giant status output gets cut off with an override button, and symlink handling got saner.
+
+That is a lot of new machinery, and most of it I will simply enjoy for free the day my daily driver catches up. The worktree core though — that little =Z= map and its branch sibling — stays mine: upstream built the backend-to-buffer plumbing, I built the workflow layer, and after this week's comparison I am fairly confident the two dovetail rather than duplicate. Next job is backporting the good ideas: prune-first listing at the very least, and maybe a transplant of my own. But not today. Today I am just pleased the rumour was true.
 * TODO Emacs Keys in Bash: Flyline as a Fish Substitute :emacs:bash:flyline:fish:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260906120000-emacs--Emacs-Keys-in-Bash-Flyline-as-a-Fish-Substitute
@@ -3582,7 +3616,7 @@ error: Unable to get write lock on /home/jdyer/.cache/mu/xapian: already locked 
 * TODO Emacs Theme Editor
 
 https://emacsfodder.github.io/emacs-theme-editor/
-* DONE Git Worktreess Without Leaving Built-in VC :emacs:vc:git:worktree:2026:
+* DONE Git Worktrees Without Leaving Built-in VC :emacs:vc:git:worktree:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260905090959-emacs--Git-Worktrees-and-Branch-Surgery-in-Built-in-VC
 :EXPORT_HUGO_SECTION: emacs
