@@ -35,3 +35,77 @@ Stash      : Nothing stashed
               ("C-c t f" . org-table-fit-window)
               ("C-c t u" . org-table-fit-unwrap)))
 
+              ==========
+
+              The lack of widespread support for *XML Schema (XSD) 1.1* in standard operating system tools, native language runtimes (like .NET/PowerShell), and C libraries (like =libxml2=/=xmllint=) comes down to three main factors: *timing*, *implementation complexity*, and *vendor maintenance priorities*.
+
+-----
+
+** Key Reasons XSD 1.1 Is Rarely Supported natively
+
+*** 1. The Industry Shift to JSON and REST
+
+- *XSD 1.0 (2001):* Finalized during the peak of the enterprise XML boom (SOAP, WS-*, configuration management). Microsoft, IBM, Apache, and GNOME invested heavily in building robust native engines.
+- *XSD 1.1 (2012):* Finalized over a decade later. By 2012, software development had largely transitioned to *JSON, REST APIs, Protocol Buffers, and OpenAPI/Swagger*. Because interest in complex XML standards dropped significantly, major vendors had little incentive to rewrite or upgrade their core XML parsing engines.
+
+*** 2. Extreme Implementation Complexity (=xs:assert= & XPath 2.0)
+
+XSD 1.0 relies on finite state automata (grammars and regular expressions) to validate document structure.
+
+XSD 1.1 introduced advanced capabilities that required a completely different architecture:
+
+- *Conditional Assertions (=xs:assert= / =xs:assertion=):* Allows rules like *"If attribute =type= is 'numeric', the element content must be an integer."*
+- *Type Alternatives (=xs:alternative=):* Allows element types to change dynamically depending on attributes or context.
+
+To evaluate these assertions, an XSD 1.1 validator *must embed a complete XPath 2.0 evaluation engine*. Building or integrating an XPath 2.0 processor into light C libraries or language runtimes represented a massive engineering effort for minimal commercial return.
+
+*** 3. Engine Maintenance & Feature Freezes
+
+- *=libxml2= (=xmllint=):* Written in C, =libxml2= powers XML processing across Linux, macOS, PHP, Python, and C/C++. Its maintainers froze major feature additions around XSD 1.0 to focus almost exclusively on bug fixes, performance, and memory safety vulnerabilities.
+- *Microsoft .NET (=System.Xml=) & PowerShell:* Microsoft froze feature expansion of =System.Xml.Schema= in .NET 4.0. PowerShell’s =[xml]= type acceleration and =Test-Xml= rely directly on =.NET='s schema validator, which remains locked at XSD 1.0.
+
+-----
+
+** Tooling & Engine Matrix
+
+| Tool / Runtime                  | Core Engine              | XSD 1.0 | XSD 1.1 |
+| ---                             | ---                      | ---     | ---     |
+| *=xmllint=* (Linux / macOS CLI) | =libxml2=                | ✅      | ❌      |
+| *PowerShell / C#*               | .NET =System.Xml=        | ✅      | ❌      |
+| *Python (=lxml=)*               | =libxml2= wrapper        | ✅      | ❌      |
+| *Java (Standard)*               | Java JAXP / Sun          | ✅      | ❌      |
+| *Apache Xerces-J*               | Xerces Java (1.1 branch) | ✅      | ✅      |
+| *Saxon-EE / Saxon-HE*           | Saxonica Engine          | ✅      | ✅      |
+| *Python (=xmlschema=)*          | Native Python engine     | ✅      | ✅      |
+| *Altova / Oxygen XML*           | Proprietary Commercial   | ✅      | ✅      |
+
+-----
+
+** How to Validate C2SIM Artifacts (XSD 1.1 Workarounds)
+
+Because C2SIM (Command and Control Systems Interoperability Language) relies on XSD 1.1 features for complex message structure validation, you can use these cross-platform XSD 1.1-compliant tools instead of =xmllint= or PowerShell:
+
+*** Option A: Python =xmlschema= (Easiest CLI & Scripting)
+
+Python's =xmlschema= library natively supports XSD 1.1 assertions and open content models.
+
+#+begin_src bash
+pip install xmlschema
+
+#+end_src
+
+Validate via the Python CLI:
+
+#+begin_src bash
+xmlschema-validate --version 1.1 schema.xsd document.xml
+
+#+end_src
+
+*** Option B: Apache Xerces-J (Standalone Java CLI)
+
+Download the *Xerces2 Java release with XSD 1.1 support* (=xercesImpl.jar= and =org.apache.xerces.models.validation.jar=):
+
+#+begin_src bash
+java -cp "xercesImpl.jar:xml-apis.jar" dom.Counter -v -s -fullschema -xsd11 document.xml
+
+#+end_src
