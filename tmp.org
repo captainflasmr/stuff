@@ -109,3 +109,36 @@ Download the *Xerces2 Java release with XSD 1.1 support* (=xercesImpl.jar= and =
 java -cp "xercesImpl.jar:xml-apis.jar" dom.Counter -v -s -fullschema -xsd11 document.xml
 
 #+end_src
+
+
+#################################
+
+Yes, **=svnsync= is much better suited for this than =svnrdump**=.
+
+Because =svnsync= tracks its state revision-by-revision on the target server, it handles network instability gracefully. If a connection drops mid-transfer, running =svnsync sync= again resumes from the exact revision where it failed rather than forcing you to restart from revision 0.
+
+*** Prerequisites
+
+1. *The remote repository must be empty (at Revision 0).*
+2. *The =pre-revprop-change= hook must be enabled on the remote server.* =svnsync= needs to write original commit authors, dates, and log messages. The remote SVN server will reject the sync unless this hook script is enabled and returns exit code =0=. *(If you use a hosted service like VisualSVN Server, Assembla, or RhodeCode, there is usually a checkbox in the admin panel to enable revision property changes).*
+
+1. *Initialize the Sync Link:* Prerequisite: Empty remote repository.
+Pass the *remote target URL first* and your *local source URL second* using the =file://= protocol:
+
+#+begin_src bash
+svnsync init https://remote-server/svn/your-repo file:///home/jdyer/local_repo
+
+#+end_src
+
+*Verification:* The terminal should output =Copied properties for revision 0.=
+
+
+2. *Execute the Synchronization:*
+Push all revisions from your local repository to the remote server:
+
+#+begin_src bash
+svnsync sync https://remote-server/svn/your-repo
+
+#+end_src
+
+*Verification:* You will see sequential =Committed revision 1.=, =Committed revision 2.=, etc., stream in the terminal. If the connection drops, simply re-run this same command to resume from the last completed revision.
