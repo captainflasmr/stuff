@@ -6,6 +6,36 @@
 (load-file "~/.emacs.d/Emacs-vanilla/init.el")
 
 ;;
+;; -> fonts
+;;
+;; Main font sizes. Edit these numbers, then re-evaluate this section
+;; (or restart Emacs). Values are in 1/10pt, so 105 means 10.5pt.
+;; They override `Emacs-vanilla/init.el' `custom-set-faces' above.
+(defvar my/main-font-height 90
+  "Height for `default' and `fixed-pitch' faces.")
+(defvar my/variable-pitch-height 100
+  "Height for `variable-pitch' face.")
+(defvar my/mode-line-height 90
+  "Height for `mode-line' and `mode-line-inactive' faces.")
+
+(defun my/apply-main-font-sizes ()
+  "Apply `my/main-font-height' and related face heights."
+  (set-face-attribute 'default nil :height my/main-font-height)
+  (when (facep 'fixed-pitch)
+    (set-face-attribute 'fixed-pitch nil :height my/main-font-height))
+  (when (facep 'variable-pitch)
+    (set-face-attribute 'variable-pitch nil :height my/variable-pitch-height))
+  (set-face-attribute 'mode-line nil :height my/mode-line-height)
+  (set-face-attribute 'mode-line-inactive nil :height my/mode-line-height))
+
+(my/apply-main-font-sizes)
+;; Re-apply after theme changes and on new frames (daemon).
+(add-hook 'enable-theme-functions
+          (lambda (&rest _) (my/apply-main-font-sizes)))
+(add-hook 'after-make-frame-functions
+          (lambda (_frame) (my/apply-main-font-sizes)))
+
+;;
 ;; -> package-archives
 ;;
 
@@ -163,10 +193,8 @@ n" :prepend t :jump-to-captured t)
 
 (use-package org-table-fit
   :load-path "~/.emacs.d/offline-packages/local-packages/org-table-fit"
-  :demand t
   :hook (org-mode . org-table-fit-overlay-mode)
   :bind (:map org-mode-map
-              ("C-c t f" . org-table-fit-window)
               ("C-c t i" . org-table-fit-window)
               ("C-c t t" . org-table-fit-overlay-mode)
               ("C-c t u" . org-table-fit-unwrap)
@@ -175,11 +203,132 @@ n" :prepend t :jump-to-captured t)
   (setq org-table-fit-overlay-reveal-on-point nil))
 
 ;;
+;; -> org-present
+;;
+;; Present an Org file directly from the buffer: each top-level heading is
+;; one slide.  `C-c s p' starts the presentation; left/right move between
+;; slides and `C-c C-q' quits.  The hooks enlarge the text, show inline
+;; images, hide the cursor, and make the buffer read-only while presenting.
+;; (`C-c p' is taken by diff-minimap in Org buffers, hence the `s' prefix.)
+;; The source is vendored in offline-packages/local-packages/org-present, so
+;; this needs no package archive; `:ensure nil' keeps startup offline-safe.
+;;
+(use-package org-present
+  :ensure nil
+  :load-path ("offline-packages/local-packages/org-present"
+              "local-packages/org-present")
+  :commands org-present
+  :init
+  (setq my/org-present-configured t)
+  (with-eval-after-load 'org
+    (define-key org-mode-map (kbd "C-c s p") #'org-present))
+  :config
+  (add-hook 'org-present-mode-hook
+            (lambda ()
+              (org-present-big)
+              (org-display-inline-images)
+              ;; Cache the cursor before hiding it: `org-present-read-only'
+              ;; also records `cursor-type', so calling it first prevents it
+              ;; from clobbering the cached value with nil.
+              (org-present-read-only)
+              (org-present-hide-cursor)))
+  (add-hook 'org-present-mode-quit-hook
+            (lambda ()
+              (org-present-small)
+              (org-remove-inline-images)
+              ;; Restore a visible cursor even if the cache was empty.
+              (setq-local cursor-type (or org-present-cursor-cache t))
+              (org-present-show-cursor)
+              (org-present-read-write))))
+
+;;
+;; -> org sell summaries
+;;
+;; Regenerates a summary table from the buffer's TODO headings as an
+;; Org dynamic block.  Update it with `C-c C-c' on the BEGIN line; it
+;; is also refreshed automatically before saving:
+;;
+;;   * Summary
+;;
+;;   #+BEGIN: sell-summary
+;;   | Item | Status | Target | Sold |
+;;   ...
+;;   #+END:
+
+(defun my/org-sell-summary--format (value)
+  "Return VALUE formatted for the summary table.
+Numeric values get two decimals; anything else, including nil and
+empty strings, is returned as trimmed text."
+  (let ((value (and value (string-trim value))))
+    (cond ((or (null value) (string= value "")) "")
+          ((string-match-p "\\`-?[0-9]+\\(?:\\.[0-9]+\\)?\\'" value)
+           (format "%.2f" (string-to-number value)))
+          (t value))))
+
+(defun my/org-sell-summary--rows ()
+  "Collect summary rows for each heading with a TODO keyword.
+Each row is a list (ITEM STATUS TARGET SOLD)."
+  (let (rows)
+    (org-element-map (org-element-parse-buffer) 'headline
+      (lambda (headline)
+        (when-let* ((keyword (org-element-property :todo-keyword headline)))
+          (push (list (org-element-property :raw-value headline)
+                      (format "%s" keyword)
+                      (my/org-sell-summary--format (org-element-property :TARGET headline))
+                      (my/org-sell-summary--format (org-element-property :SOLD headline)))
+                rows))))
+    (nreverse rows)))
+
+(defun my/org-sell-summary--sum (rows column)
+  "Return the sum of numeric COLUMN in ROWS, formatted with two decimals."
+  (format "%.2f"
+          (apply #'+ (mapcar (lambda (row) (string-to-number (nth column row)))
+                             rows))))
+
+(defun my/org-sell-summary--table ()
+  "Build the heading summary table for the current buffer."
+  (let* ((rows (my/org-sell-summary--rows))
+         (table (append rows
+                        (list (list "TOTAL" ""
+                                    (my/org-sell-summary--sum rows 2)
+                                    (my/org-sell-summary--sum rows 3))))))
+    (concat "| Item | Status | Target | Sold |\n"
+            "|------+--------+--------+------|\n"
+            (mapconcat (lambda (row)
+                         (concat "| " (mapconcat #'identity row " | ") " |"))
+                       table "\n"))))
+
+(defun org-dblock-write:sell-summary (_params)
+  "Write a summary table of the buffer's TODO headings."
+  (insert (my/org-sell-summary--table))
+  (org-table-align))
+
+(defun my/org-sell-summary--update-on-save ()
+  "Refresh `sell-summary' dynamic blocks before saving the buffer."
+  (when (and (derived-mode-p 'org-mode)
+             (save-excursion
+               (goto-char (point-min))
+               (re-search-forward "^[ \t]*#\\+BEGIN:[ \t]*sell-summary\\>" nil t)))
+    (let ((inhibit-message t))
+      (org-update-all-dblocks))))
+
+(add-hook 'before-save-hook #'my/org-sell-summary--update-on-save)
+
+(with-eval-after-load 'org
+  (org-dynamic-block-define "sell-summary"
+                            (lambda ()
+                              (interactive)
+                              (org-create-dblock '(:name "sell-summary")))))
+
+;;
 ;; -> use-package
 ;;
-(use-package async)
-(use-package i3wm-config-mode)
-(use-package yaml-mode)
+(use-package async
+  :defer t)
+(use-package i3wm-config-mode
+  :defer t)
+(use-package yaml-mode
+  :mode ("\\.yml\\'" "\\.yaml\\'"))
 
 ;;
 ;; -> plantuml
@@ -217,28 +366,33 @@ n" :prepend t :jump-to-captured t)
 ;; -> themes
 ;;
 (use-package doom-themes)
-(use-package ef-themes)
-(use-package gruvbox-theme)
-(use-package timu-caribbean-theme)
+(use-package ef-themes
+  :defer t)
+(use-package gruvbox-theme
+  :defer t)
+(use-package timu-caribbean-theme
+  :defer t)
 
 (use-package timu-spacegrey-theme
-  :config
+  :defer t
+  :custom
   ;; (setq timu-spacegrey-flavour "light")
-  (setq timu-spacegrey-scale-org-document-title 1.8)
-  (setq timu-spacegrey-scale-org-document-info 1.4)
-  (setq timu-spacegrey-scale-org-level-1 1.8)
-  (setq timu-spacegrey-scale-org-level-2 1.4)
-  (setq timu-spacegrey-scale-org-level-3 1.2))
+  (timu-spacegrey-scale-org-document-title 1.8)
+  (timu-spacegrey-scale-org-document-info 1.4)
+  (timu-spacegrey-scale-org-level-1 1.8)
+  (timu-spacegrey-scale-org-level-2 1.4)
+  (timu-spacegrey-scale-org-level-3 1.2))
 
 (use-package timu-rouge-theme
-  :config
+  :defer t
+  :custom
   ;; (setq timu-rouge-org-intense-colors t)
-  (setq timu-rouge-mode-line-border t)
-  (setq timu-rouge-scale-org-document-title 1.8)
-  (setq timu-rouge-scale-org-document-info 1.4)
-  (setq timu-rouge-scale-org-level-1 1.8)
-  (setq timu-rouge-scale-org-level-2 1.4)
-  (setq timu-rouge-scale-org-level-3 1.2))
+  (timu-rouge-mode-line-border t)
+  (timu-rouge-scale-org-document-title 1.8)
+  (timu-rouge-scale-org-document-info 1.4)
+  (timu-rouge-scale-org-level-1 1.8)
+  (timu-rouge-scale-org-level-2 1.4)
+  (timu-rouge-scale-org-level-3 1.2))
 
 ;;
 ;; -> auto-mode-alist
@@ -259,8 +413,11 @@ n" :prepend t :jump-to-captured t)
 ;; -> emacs-30.1
 ;;
 
-(use-package csv-mode)
-(use-package package-lint)
+(use-package csv-mode
+  :mode "\\.csv\\'")
+(use-package package-lint
+  :commands (package-lint-current-buffer
+             package-lint-batch-and-exit))
 
 (use-package bank-buddy
   :load-path "~/source/repos/bank-buddy"
@@ -282,12 +439,12 @@ n" :prepend t :jump-to-captured t)
 
 (use-package ollama-buddy
   :load-path "~/source/repos/ollama-buddy"
-  :demand t
   :bind
   ("C-c O" . ollama-buddy-transient-menu)
   :config
   ;; overall default model
-  (setq ollama-buddy-default-model "u:gemma4:31b-cloud")
+  ;; (setq ollama-buddy-default-model "u:gemma4:31b-cloud")
+  (setq ollama-buddy-default-model "n:deepseek-v4.1-flash")
 
   ;;
   ;; Opencode
@@ -296,7 +453,7 @@ n" :prepend t :jump-to-captured t)
   ;; ~/.authinfo:  machine ollama-buddy-opencode login apikey password <KEY>
   (setq ollama-buddy-opencode-api-key
         (auth-source-pick-first-password
-         :host "opencode-go-old" :user "apikey"))
+         :host "opencode-go" :user "apikey"))
   (setq ollama-buddy-opencode-usage-url 
         "https://opencode.ai/workspace/wrk_01KQ0AFJ2GSES8D7J3CRMAW8B8/go")
   (setq ollama-buddy-opencode-session-token 
@@ -384,19 +541,19 @@ n" :prepend t :jump-to-captured t)
   (setq ollama-buddy-completion-model "qwen3-coder-next:cloud")
 
   ;; setup default custom menu for preferred models
-  ;; (ollama-buddy-update-menu-entry 'refactor-code     :model "n:kimi-k2.6")
-  ;; (ollama-buddy-update-menu-entry 'git-commit        :model "n:deepseek-v4-flash")
-  ;; (ollama-buddy-update-menu-entry 'describe-code     :model "n:kimi-k2.6")
-  ;; (ollama-buddy-update-menu-entry 'dictionary-lookup :model "n:mimo-v2.5")
-  ;; (ollama-buddy-update-menu-entry 'synonym           :model "n:mimo-v2.5")
-  ;; (ollama-buddy-update-menu-entry 'proofread         :model "n:minimax-m2.7")
+  (ollama-buddy-update-menu-entry 'refactor-code     :model "n:deepseek-v4.1-flash")
+  (ollama-buddy-update-menu-entry 'git-commit        :model "n:deepseek-v4.1-flash")
+  (ollama-buddy-update-menu-entry 'describe-code     :model "n:deepseek-v4.1-flash")
+  (ollama-buddy-update-menu-entry 'dictionary-lookup :model "n:deepseek-v4.1-flash")
+  (ollama-buddy-update-menu-entry 'synonym           :model "n:deepseek-v4.1-flash")
+  (ollama-buddy-update-menu-entry 'proofread         :model "n:deepseek-v4.1-flash")
 
-  (ollama-buddy-update-menu-entry 'refactor-code     :model "n:deepseek-v4-flash")
-  (ollama-buddy-update-menu-entry 'git-commit        :model "n:deepseek-v4-flash")
-  (ollama-buddy-update-menu-entry 'describe-code     :model "n:deepseek-v4-flash")
-  (ollama-buddy-update-menu-entry 'dictionary-lookup :model "n:deepseek-v4-flash")
-  (ollama-buddy-update-menu-entry 'synonym           :model "n:deepseek-v4-flash")
-  (ollama-buddy-update-menu-entry 'proofread         :model "n:deepseek-v4-flash")
+  ;; (ollama-buddy-update-menu-entry 'refactor-code     :model "u:gemma4:31b-cloud")
+  ;; (ollama-buddy-update-menu-entry 'git-commit        :model "u:gemma4:31b-cloud")
+  ;; (ollama-buddy-update-menu-entry 'describe-code     :model "u:gemma4:31b-cloud")
+  ;; (ollama-buddy-update-menu-entry 'dictionary-lookup :model "u:gemma4:31b-cloud")
+  ;; (ollama-buddy-update-menu-entry 'synonym           :model "u:gemma4:31b-cloud")
+  ;; (ollama-buddy-update-menu-entry 'proofread         :model "u:gemma4:31b-cloud")
 
   ;; dired integration
   (with-eval-after-load 'dired
@@ -405,13 +562,6 @@ n" :prepend t :jump-to-captured t)
 ;;
 ;; -> other
 ;;
-(defun convert-weight (weight)
-  "Convert WEIGHT from string to pounds."
-  (let* ((parts (split-string weight ":"))
-         (stone (string-to-number (car parts)))
-         (pounds (string-to-number (cadr parts))))
-    (+ (* stone 14) pounds)))
-
 (tiny-diminish 'cursor-heatmap-mode)
 ;; (tiny-diminish 'simply-annotate-mode)
 (tiny-diminish 'simple-autosuggest-mode)
@@ -449,7 +599,8 @@ n" :prepend t :jump-to-captured t)
 
 (add-to-list 'auto-mode-alist '("\\.cshtml\\'" . html-mode))
 
-(use-package ibuffer)
+(use-package ibuffer
+  :defer t)
 
 ;; (use-package dape
 ;;   :init
@@ -519,14 +670,13 @@ n" :prepend t :jump-to-captured t)
 
 (use-package dired-image-thumbnail
   :load-path "/home/jdyer/.emacs.d/offline-packages/local-packages/dired-image-thumbnail"
-  :demand t
   :config
   (setq dired-image-thumbnail-auto-accept t)
   (setq dired-image-thumbnail-sort-by 'date)
   (setq dired-image-thumbnail-sort-order 'descending)
   :bind
   (:map dired-mode-map
-        ("C-t d" . dired-image-thumbnail)  ; m for modern/enhanced
+        ("r" . dired-image-thumbnail)  ; r for render/reveal thumbnails
         ("C-t s" . dired-image-thumbnail-insert-image-subdirs)  ; s for smart subdirs
         ("C-t z" . dired-image-thumbnail-insert-subdir-recursive)  ; z for all (last letter)
         ("C-t k" . dired-image-thumbnail-kill-all-subdirs)))  ; k for kill
@@ -536,207 +686,316 @@ n" :prepend t :jump-to-captured t)
 ;;
 (add-to-list 'load-path "/usr/share/emacs/site-lisp/mu4e")
 (when (locate-library "mu4e")
-  (require 'mu4e)
-
-  (setq mu4e-maildir "~/Maildir"
-        mu4e-attachment-dir "~/Downloads"
-        mu4e-change-filenames-when-moving t
-        mu4e-update-interval 120
-        mu4e-get-mail-command "mbsync -a"
-        mu4e-headers-auto-update t
-        mu4e-view-show-images t
-        mu4e-view-show-addresses t
-        mu4e-split-view 'vertical
-        mu4e-context-policy 'pick-first
-        mu4e-compose-context-policy 'ask
-        mu4e-search-results-limit 2000
-        message-send-mail-function 'smtpmail-send-it)
-
-  ;; This format gives you "YYYY-MM-DD HH:MM" (e.g., 2026-05-21 08:53)
-  (setq mu4e-headers-date-format "%Y-%m-%d %H:%M")
-
-  (setq mu4e-headers-fields
-        '((:date    . 17)    ; Date of the message
-          ;; (:flags   .  6)    ; Message flags (U, R, F, etc.)
-          (:from    . 22)    ; Sender name/email
-          (:subject . nil))) ; Subject line (nil tells it to use all remaining space)
-
-
-  (setq mu4e-contexts
-        `(,(make-mu4e-context
-            :name "james"
-            :enter-func (lambda () (mu4e-message "Switch to james"))
-            :leave-func (lambda () (mu4e-message "Leave james"))
-            :match-func (lambda (msg)
-                          (when msg
-                            (string-prefix-p "/james" (mu4e-message-field msg :maildir))))
-            :vars `((user-mail-address . "james@dyerdwelling.family")
-                    (user-full-name . "james dyer")
-                    (mu4e-sent-folder . "/james/Sent")
-                    (mu4e-drafts-folder . "/james/Drafts")
-                    (mu4e-trash-folder . "/james/Trash")
-                    (mu4e-refile-folder . "/james/Archive")
-                    (smtpmail-smtp-user . "james@dyerdwelling.family")
-                    (smtpmail-smtp-server . "smtp.migadu.com")
-                    (smtpmail-smtp-service . 587)
-                    (smtpmail-stream-type . starttls)))
-          ,(make-mu4e-context
-            :name "jimbob"
-            :enter-func (lambda () (mu4e-message "Switch to jimbob"))
-            :leave-func (lambda () (mu4e-message "Leave jimbob"))
-            :match-func (lambda (msg)
-                          (when msg
-                            (string-prefix-p "/jimbob" (mu4e-message-field msg :maildir))))
-            :vars `((user-mail-address . "jimbob@dyerdwelling.family")
-                    (user-full-name . "james dyer")
-                    (mu4e-sent-folder . "/jimbob/Sent")
-                    (mu4e-drafts-folder . "/jimbob/Drafts")
-                    (mu4e-trash-folder . "/jimbob/Trash")
-                    (mu4e-refile-folder . "/jimbob/Archive")
-                    (smtpmail-smtp-user . "jimbob@dyerdwelling.family")
-                    (smtpmail-smtp-server . "smtp.migadu.com")
-                    (smtpmail-smtp-service . 587)
-                    (smtpmail-stream-type . starttls)))
-          ,(make-mu4e-context
-            :name "captainflasmr"
-            :enter-func (lambda () (mu4e-message "Switch to Gmail"))
-            :leave-func (lambda () (mu4e-message "Leave Gmail"))
-            :match-func (lambda (msg)
-                          (when msg
-                            (string-prefix-p "/captainflasmr" (mu4e-message-field msg :maildir))))
-            :vars `((user-mail-address . "captainflasmr@gmail.com")
-                    (user-full-name . "james dyer")
-                    (mu4e-sent-folder . "/captainflasmr/[Gmail]/Sent Mail")
-                    (mu4e-drafts-folder . "/captainflasmr/[Gmail]/Drafts")
-                    (mu4e-trash-folder . "/captainflasmr/[Gmail]/Trash")
-                    (mu4e-refile-folder . "/captainflasmr/[Gmail]/All Mail")
-                    (smtpmail-smtp-user . "captainflasmr@gmail.com")
-                    (smtpmail-smtp-server . "smtp.gmail.com")
-                    (smtpmail-smtp-service . 587)
-                    (smtpmail-stream-type . starttls)))))
-
-  (setq mu4e-maildir-shortcuts
-        '(("/jimbob/INBOX" . ?j)
-          ("/james/INBOX" . ?m)
-          ("/captainflasmr/INBOX" . ?g)))
-
-  (setq mu4e-bookmarks
-        '((:name "Unified Inbox"
-                 :query "(maildir:/jimbob/INBOX OR maildir:/james/INBOX OR maildir:/captainflasmr/INBOX)"
-                 :key ?b)
-          (:name "Unified Archive"
-                 :query "(maildir:/jimbob/Archive OR maildir:/james/Archive OR maildir:\"/captainflasmr/[Gmail]/All Mail\")"
-                 :key ?a)
-          (:name "Unified Sent"
-                 :query "(maildir:/jimbob/Sent OR maildir:/james/Sent OR maildir:\"/captainflasmr/[Gmail]/Sent Mail\")"
-                 :key ?s)
-          (:name "Unified Trash"
-                 :query "(maildir:/jimbob/Trash OR maildir:/james/Trash OR maildir:\"/captainflasmr/[Gmail]/Trash\")"
-                 :key ?t)
-          (:name "Unified Spam"
-                 :query "(maildir:/jimbob/Junk OR maildir:/james/Junk OR maildir:\"/captainflasmr/[Gmail]/Spam\")"
-                 :key ?p)
-          (:name "Unread messages"
-                 :query "flag:unread AND NOT flag:trashed"
-                 :key ?u)
-          (:name "Today's messages"
-                 :query "date:today..now"
-                 :key ?d)))
-
-  (setq shr-use-colors nil
-        shr-use-fonts nil
-        mm-text-html-renderer 'shr)
-
-  (remove-hook 'mu4e-view-rendered-hook 'mu4e-resize-linked-headers-window)
-  (add-hook 'mu4e-view-rendered-hook
-            (defun my/mu4e-balance-views ()
-              (when (and (eq mu4e-split-view 'vertical)
-                         (mu4e-current-buffer-type-p 'view))
-                (when-let* ((win (get-buffer-window (current-buffer) t)))
-                  (let ((target (floor (/ (frame-width) 2))))
-                    (window-resize win (- target (window-total-width win)) t nil t))))))
-
-  (defvar my/mu4e--focus-window nil)
-
-  (advice-add 'mu4e-headers-view-message :before
-              (defun my/mu4e-save-focus-window (&rest _)
-                (setq my/mu4e--focus-window (selected-window))))
-
-  (advice-add 'mu4e-view :after
-              (defun my/mu4e-restore-focus-window (&rest _)
-                (when (window-live-p my/mu4e--focus-window)
-                  (select-window my/mu4e--focus-window 'norecord)
-                  (setq my/mu4e--focus-window nil))))
-
+  ;; mu4e pulls in gnus/message and friends (~0.5s): load it on first
+  ;; use via C-c m or M-x mu4e rather than at startup.
+  (autoload 'mu4e "mu4e" "Start mu4e." t)
   (define-key my-overrides-mode-map (kbd "C-c m") #'mu4e)
 
-  (define-key mu4e-headers-mode-map (kbd "f") #'mu4e-headers-view-message)
+  (with-eval-after-load 'mu4e
+    (setq mu4e-maildir "~/Maildir"
+          mu4e-attachment-dir "~/Downloads"
+          mu4e-change-filenames-when-moving t
+          mu4e-update-interval 120
+          mu4e-get-mail-command "mbsync -a"
+          mu4e-headers-auto-update t
+          mu4e-view-show-images t
+          mu4e-view-show-addresses t
+          mu4e-split-view 'vertical
+          mu4e-context-policy 'pick-first
+          mu4e-compose-context-policy 'ask
+          mu4e-search-results-limit 2000
+          message-send-mail-function 'smtpmail-send-it)
 
-  (advice-add 'mu4e-message :around
-              (defun my/mu4e-suppress-indexing (orig-fn &rest args)
-                "Suppress distracting indexing/retrieval progress messages from minibuffer."
-                (unless (and (stringp (car args))
-                             (string-match-p
-                              "\\`\\(?:Indexing\\|Retrieving mail\\)" (car args)))
-                  (apply orig-fn args))))
+    ;; This format gives you "YYYY-MM-DD HH:MM" (e.g., 2026-05-21 08:53)
+    (setq mu4e-headers-date-format "%Y-%m-%d %H:%M")
 
-  ;;
-  ;; -> mu4e-update-indicator
-  ;;
-  (defvar my/mu4e--updating nil
-    "Non-nil while mu4e is retrieving or indexing mail.")
-  (defvar my/mu4e-update-timer nil
-    "Timer for refreshing the mu4e update header-line.")
+    (setq mu4e-headers-fields
+          '((:date    . 17)    ; Date of the message
+            ;; (:flags   .  6)    ; Message flags (U, R, F, etc.)
+            (:from    . 22)    ; Sender name/email
+            (:subject . nil))) ; Subject line (nil tells it to use all remaining space)
 
-  (defun my/mu4e--update-buffer-p ()
-    "Return non-nil if the mu4e retrieval process is alive."
-    (and (boundp 'mu4e--update-buffer)
-         (buffer-live-p mu4e--update-buffer)
-         (process-live-p (get-buffer-process mu4e--update-buffer))))
 
-  (defun my/mu4e--buffer-is-mu4e-p ()
-    "Return non-nil if current buffer is in a mu4e mode."
-    (memq major-mode
-          '(mu4e-main-mode mu4e-headers-mode
-                           mu4e-view-mode mu4e-raw-view-mode)))
+    (setq mu4e-contexts
+          `(,(make-mu4e-context
+              :name "james"
+              :enter-func (lambda () (mu4e-message "Switch to james"))
+              :leave-func (lambda () (mu4e-message "Leave james"))
+              :match-func (lambda (msg)
+                            (when msg
+                              (string-prefix-p "/james" (mu4e-message-field msg :maildir))))
+              :vars `((user-mail-address . "james@dyerdwelling.family")
+                      (user-full-name . "james dyer")
+                      (mu4e-sent-folder . "/james/Sent")
+                      (mu4e-drafts-folder . "/james/Drafts")
+                      (mu4e-trash-folder . "/james/Trash")
+                      (mu4e-refile-folder . "/james/Archive")
+                      (smtpmail-smtp-user . "james@dyerdwelling.family")
+                      (smtpmail-smtp-server . "smtp.migadu.com")
+                      (smtpmail-smtp-service . 587)
+                      (smtpmail-stream-type . starttls)))
+            ,(make-mu4e-context
+              :name "jimbob"
+              :enter-func (lambda () (mu4e-message "Switch to jimbob"))
+              :leave-func (lambda () (mu4e-message "Leave jimbob"))
+              :match-func (lambda (msg)
+                            (when msg
+                              (string-prefix-p "/jimbob" (mu4e-message-field msg :maildir))))
+              :vars `((user-mail-address . "jimbob@dyerdwelling.family")
+                      (user-full-name . "james dyer")
+                      (mu4e-sent-folder . "/jimbob/Sent")
+                      (mu4e-drafts-folder . "/jimbob/Drafts")
+                      (mu4e-trash-folder . "/jimbob/Trash")
+                      (mu4e-refile-folder . "/jimbob/Archive")
+                      (smtpmail-smtp-user . "jimbob@dyerdwelling.family")
+                      (smtpmail-smtp-server . "smtp.migadu.com")
+                      (smtpmail-smtp-service . 587)
+                      (smtpmail-stream-type . starttls)))
+            ,(make-mu4e-context
+              :name "captainflasmr"
+              :enter-func (lambda () (mu4e-message "Switch to Gmail"))
+              :leave-func (lambda () (mu4e-message "Leave Gmail"))
+              :match-func (lambda (msg)
+                            (when msg
+                              (string-prefix-p "/captainflasmr" (mu4e-message-field msg :maildir))))
+              :vars `((user-mail-address . "captainflasmr@gmail.com")
+                      (user-full-name . "james dyer")
+                      (mu4e-sent-folder . "/captainflasmr/[Gmail]/Sent Mail")
+                      (mu4e-drafts-folder . "/captainflasmr/[Gmail]/Drafts")
+                      (mu4e-trash-folder . "/captainflasmr/[Gmail]/Trash")
+                      (mu4e-refile-folder . "/captainflasmr/[Gmail]/All Mail")
+                      (smtpmail-smtp-user . "captainflasmr@gmail.com")
+                      (smtpmail-smtp-server . "smtp.gmail.com")
+                      (smtpmail-smtp-service . 587)
+                      (smtpmail-stream-type . starttls)))))
 
-  (defun my/mu4e-update-header-refresh ()
-    "Refresh the header-line in mu4e buffers to show update status."
-    (let* ((retrieving (my/mu4e--update-buffer-p))
-           (indicator
-            (cond (retrieving
-                   (propertize " ⟳ mu4e retrieving... " 'face 'mode-line-highlight))
-                  (my/mu4e--updating
-                   (propertize " ⟳ mu4e indexing... "    'face 'mode-line-highlight))
-                  (t nil))))
-      (dolist (buf (buffer-list))
-        (with-current-buffer buf
-          (when (my/mu4e--buffer-is-mu4e-p)
-            (setq-local header-line-format indicator))))
-      (force-mode-line-update t)
-      (unless indicator
-        (setq my/mu4e--updating nil)
-        (when my/mu4e-update-timer
-          (cancel-timer my/mu4e-update-timer)
-          (setq my/mu4e-update-timer nil)))))
+    (setq mu4e-maildir-shortcuts
+          '(("/jimbob/INBOX" . ?j)
+            ("/james/INBOX" . ?m)
+            ("/captainflasmr/INBOX" . ?g)))
 
-  (defun my/mu4e-update-header-start ()
-    "Start the mu4e update header-line timer."
-    (setq my/mu4e--updating t)
-    (my/mu4e-update-header-refresh)
-    (unless my/mu4e-update-timer
-      (setq my/mu4e-update-timer
-            (run-at-time 0.5 0.5 #'my/mu4e-update-header-refresh))))
+    (setq mu4e-bookmarks
+          '((:name "Unified Inbox"
+                   :query "(maildir:/jimbob/INBOX OR maildir:/james/INBOX OR maildir:/captainflasmr/INBOX)"
+                   :key ?b)
+            (:name "Unified Archive"
+                   :query "(maildir:/jimbob/Archive OR maildir:/james/Archive OR maildir:\"/captainflasmr/[Gmail]/All Mail\")"
+                   :key ?a)
+            (:name "Unified Sent"
+                   :query "(maildir:/jimbob/Sent OR maildir:/james/Sent OR maildir:\"/captainflasmr/[Gmail]/Sent Mail\")"
+                   :key ?s)
+            (:name "Unified Trash"
+                   :query "(maildir:/jimbob/Trash OR maildir:/james/Trash OR maildir:\"/captainflasmr/[Gmail]/Trash\")"
+                   :key ?t)
+            (:name "Unified Spam"
+                   :query "(maildir:/jimbob/Junk OR maildir:/james/Junk OR maildir:\"/captainflasmr/[Gmail]/Spam\")"
+                   :key ?p)
+            (:name "Unread messages"
+                   :query "flag:unread AND NOT flag:trashed"
+                   :key ?u)
+            (:name "Today's messages"
+                   :query "date:today..now"
+                   :key ?d)))
 
-  (defun my/mu4e-update-header-stop ()
-    "Mark mu4e update as done and clear header-lines."
-    (setq my/mu4e--updating nil)
-    (my/mu4e-update-header-refresh))
+    (setq shr-use-colors nil
+          shr-use-fonts nil
+          mm-text-html-renderer 'shr)
 
-  (add-hook 'mu4e-update-pre-hook #'my/mu4e-update-header-start)
-  (add-hook 'mu4e-index-updated-hook #'my/mu4e-update-header-stop)
+    (remove-hook 'mu4e-view-rendered-hook 'mu4e-resize-linked-headers-window)
+    (add-hook 'mu4e-view-rendered-hook
+              (defun my/mu4e-balance-views ()
+		        (when (and (eq mu4e-split-view 'vertical)
+                           (mu4e-current-buffer-type-p 'view))
+                  (when-let* ((win (get-buffer-window (current-buffer) t)))
+                    (let ((target (floor (/ (frame-width) 2))))
+                      (window-resize win (- target (window-total-width win)) t nil t))))))
 
-  ) ;; end (when (locate-library "mu4e"))
+    (defvar my/mu4e--focus-window nil)
+
+    (advice-add 'mu4e-headers-view-message :before
+		        (defun my/mu4e-save-focus-window (&rest _)
+                  (setq my/mu4e--focus-window (selected-window))))
+
+    (advice-add 'mu4e-view :after
+		        (defun my/mu4e-restore-focus-window (&rest _)
+                  (when (window-live-p my/mu4e--focus-window)
+                    (select-window my/mu4e--focus-window 'norecord)
+                    (setq my/mu4e--focus-window nil))))
+
+    (define-key mu4e-headers-mode-map (kbd "f") #'mu4e-headers-view-message)
+
+    (advice-add 'mu4e-message :around
+		        (defun my/mu4e-suppress-indexing (orig-fn &rest args)
+                  "Suppress distracting indexing/retrieval progress messages from minibuffer."
+                  (unless (and (stringp (car args))
+                               (string-match-p
+				                "\\`\\(?:Indexing\\|Retrieving mail\\)" (car args)))
+                    (apply orig-fn args))))
+
+    ;;
+    ;; -> mu4e-update-indicator
+    ;;
+    ;; Show retrieval/indexing progress in the header-line of mu4e buffers.
+    ;; mu4e's own progress messages are suppressed (see
+    ;; `my/mu4e-suppress-indexing' above), so this is the main feedback
+    ;; during mail updates: retrieve progress comes from mbsync's status
+    ;; line, indexing progress from `mu4e-index-message' calls.
+    (defvar my/mu4e--updating nil
+      "Non-nil while mu4e is retrieving or indexing mail.")
+    (defvar my/mu4e-update-timer nil
+      "Timer for refreshing the mu4e update header-line.")
+    (defvar my/mu4e--index-progress nil
+      "Latest indexing progress, e.g. \"checked 2588 · updated 3\".")
+    (defvar-local my/mu4e--saved-header-line-format nil
+      "Value of `header-line-format' to restore after an update.")
+
+    (defun my/mu4e--update-buffer-p ()
+      "Return non-nil if the mu4e retrieval process is alive."
+      (and (boundp 'mu4e--update-buffer)
+           (buffer-live-p mu4e--update-buffer)
+           (process-live-p (get-buffer-process mu4e--update-buffer))))
+
+    (defun my/mu4e--buffer-is-mu4e-p ()
+      "Return non-nil if current buffer is in a mu4e mode."
+      (memq major-mode
+            '(mu4e-main-mode mu4e-headers-mode
+                             mu4e-view-mode mu4e-raw-view-mode)))
+
+    (defun my/mu4e--indicator-p (value)
+      "Return non-nil if VALUE is one of our update indicator strings."
+      (and (stringp value)
+           (get-text-property 0 'my/mu4e-indicator value)))
+
+    (defun my/mu4e--format-mbsync-status (status)
+      "Render an mbsync status line STATUS compactly; nil if unrecognized.
+STATUS looks like this, with the counts changing as mail is moved:
+\"C: 1/3  B: 11/12  F: +0/0 *0/0 #0/0 -0/0  N: +210/337 *0/0 #0/0 -0/0\"."
+      (when (and status
+                 (string-match
+                  (concat "\\`C: \\([0-9]+\\)/\\([0-9]+\\)"
+                          " +B: \\([0-9]+\\)/\\([0-9]+\\)"
+                          ".* N: \\([+*#-]\\)\\([0-9]+\\)/\\([0-9]+\\)")
+                  status))
+        (let ((parts (list (format "%s/%s accounts"
+                                   (match-string 1 status)
+                                   (match-string 2 status)))))
+          ;; Box count is 0/0 until the first mailbox of a channel is known.
+          (unless (string= (match-string 4 status) "0")
+            (setq parts (append parts (list (format "%s/%s mailboxes"
+                                                    (match-string 3 status)
+                                                    (match-string 4 status))))))
+          ;; Only count transferred ("+") messages, when there are any.
+          (when (and (string= (match-string 5 status) "+")
+                     (not (string= (match-string 7 status) "0")))
+            (setq parts (append parts (list (format "%s/%s new"
+                                                    (match-string 6 status)
+                                                    (match-string 7 status))))))
+          (mapconcat #'identity parts " · "))))
+
+    (defun my/mu4e--retrieval-progress ()
+      "Describe the current mail retrieval progress.
+Prefer the latest mbsync status line from `mu4e--update-buffer'; fall
+back to its last non-empty line.  Return nil when nothing is known."
+      (when (and (boundp 'mu4e--update-buffer)
+                 (buffer-live-p mu4e--update-buffer))
+        (with-current-buffer mu4e--update-buffer
+          (let* ((tail (buffer-substring-no-properties
+                        (max (point-min) (- (point-max) 2000))
+                        (point-max)))
+                 ;; Foreground updates rewrite the status line in place,
+                 ;; background ones accumulate them separated by CRs.
+                 (lines (split-string tail "[\r\n]+" t))
+                 (status (car (last (seq-filter
+                                     (lambda (line) (string-match-p "\\`C: " line))
+                                     lines)))))
+            (or (my/mu4e--format-mbsync-status status)
+                (when-let* ((line (car (last (seq-filter
+                                              (lambda (l)
+                                                (not (string-empty-p (string-trim l))))
+                                              lines)))))
+                  (truncate-string-to-width
+                   (replace-regexp-in-string
+                    "%" "%%" ;; escape for use in `header-line-format'
+                    (string-trim (replace-regexp-in-string "[ \t]+" " " line)))
+                   60 nil nil "…")))))))
+
+    (defun my/mu4e--record-index-progress (frm &rest args)
+      "Record indexing progress from a `mu4e-index-message' FRM call.
+Also starts showing the indicator for indexing started outside of a
+mail retrieval (e.g. \\[mu4e-update-index])."
+      (let ((msg (ignore-errors (apply #'format frm args))))
+        (cond
+         ((and (stringp msg)
+               (string-match
+                (concat "\\`Indexing\\.\\.\\. checked \\([0-9]+\\), "
+                        "updated \\([0-9]+\\)")
+                msg))
+          (unless my/mu4e-update-timer
+            (my/mu4e-update-header-start))
+          (setq my/mu4e--index-progress
+                (format "checked %s · updated %s"
+                        (match-string 1 msg) (match-string 2 msg))))
+         ((and (stringp msg)
+               (string-match "\\`\\(?:Lazy indexing\\|Indexing\\) completed" msg))
+          (setq my/mu4e--index-progress nil)))))
+
+    (defun my/mu4e-update-header-refresh ()
+      "Refresh the header-line in mu4e buffers to show update status.
+Shows the current mail retrieval or indexing progress and restores
+mu4e's own header-line content once the update is done."
+      (let* ((retrieving (my/mu4e--update-buffer-p))
+             (indicator
+              (cond
+               (retrieving
+                (propertize (format " ⟳ mu4e retrieving: %s "
+                                    (or (my/mu4e--retrieval-progress) "connecting…"))
+                            'face 'mode-line-highlight
+                            'my/mu4e-indicator t))
+               (my/mu4e--updating
+                (propertize (if my/mu4e--index-progress
+                                (format " ⟳ mu4e indexing: %s " my/mu4e--index-progress)
+                              " ⟳ mu4e updating… ")
+                            'face 'mode-line-highlight
+                            'my/mu4e-indicator t)))))
+        (dolist (buf (buffer-list))
+          (when (buffer-live-p buf)
+            (with-current-buffer buf
+              (when (my/mu4e--buffer-is-mu4e-p)
+                (if indicator
+                    (progn ;; remember mu4e's own header-line for restoration
+                      (unless (my/mu4e--indicator-p header-line-format)
+                        (setq-local my/mu4e--saved-header-line-format
+                                    header-line-format))
+                      (setq-local header-line-format indicator))
+                  (when (my/mu4e--indicator-p header-line-format)
+                    (setq-local header-line-format
+                                my/mu4e--saved-header-line-format)))))))
+        (force-mode-line-update t)
+        (unless indicator
+          (setq my/mu4e--updating nil
+                my/mu4e--index-progress nil)
+          (when my/mu4e-update-timer
+            (cancel-timer my/mu4e-update-timer)
+            (setq my/mu4e-update-timer nil)))))
+
+    (defun my/mu4e-update-header-start ()
+      "Start the mu4e update header-line timer."
+      (setq my/mu4e--updating t
+            my/mu4e--index-progress nil)
+      (my/mu4e-update-header-refresh)
+      (unless my/mu4e-update-timer
+        (setq my/mu4e-update-timer
+              (run-at-time 0.5 0.5 #'my/mu4e-update-header-refresh))))
+
+    (defun my/mu4e-update-header-stop ()
+      "Mark mu4e update as done and clear header-lines."
+      (setq my/mu4e--updating nil)
+      (my/mu4e-update-header-refresh))
+
+    (advice-add 'mu4e-index-message :before #'my/mu4e--record-index-progress)
+    (add-hook 'mu4e-update-pre-hook #'my/mu4e-update-header-start)
+    (add-hook 'mu4e-index-updated-hook #'my/mu4e-update-header-stop)
+    )) ;; end (with-eval-after-load 'mu4e) and (when (locate-library "mu4e"))
 
 ;;
 ;; -> magit
@@ -777,8 +1036,10 @@ n" :prepend t :jump-to-captured t)
                  kotlin-mode magit org-social ox-hugo package-lint
                  protobuf-mode timu-caribbean-theme timu-rouge-theme
                  timu-spacegrey-theme web-mode yaml-mode))
- '(warning-suppress-log-types '((frameset)))
- '(warning-suppress-types '((frameset))))
+ '(warning-suppress-log-types '((frameset)
+                                (files missing-lexbind-cookie)))
+ '(warning-suppress-types '((frameset)
+                            (files missing-lexbind-cookie))))
 
 ;;
 ;; -> typescript-support
@@ -831,17 +1092,17 @@ n" :prepend t :jump-to-captured t)
   :bind ("C-c q" . qemu-manager-list))
 
 (use-package eglot
-   :ensure t
-   :hook (nxml-mode . eglot-ensure)
-   :config
-   (add-to-list 'eglot-server-programs
-                `(java-mode . ("/home/jdyer/.emacs.d/bin/jdtls/bin/jdtls"
-                               :initializationOptions
-                               (:bundles ["/home/jdyer/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
+  :ensure t
+  :hook (nxml-mode . eglot-ensure)
+  :config
+  (add-to-list 'eglot-server-programs
+               `(java-mode . ("/home/jdyer/.emacs.d/bin/jdtls/bin/jdtls"
+                              :initializationOptions
+                              (:bundles ["/home/jdyer/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.2.jar"]))))
 
-   (add-to-list 'eglot-server-programs
-                '(nxml-mode . ("java" "-jar"
-                               "/home/jdyer/Downloads/org.eclipse.lemminx-uber.jar")))
+  (add-to-list 'eglot-server-programs
+               '(nxml-mode . ("java" "-jar"
+                              "/home/jdyer/Downloads/org.eclipse.lemminx-uber.jar")))
 
   ;; Disable resource-intensive features for the target system
   (setq eglot-ignored-server-capabilities
@@ -886,7 +1147,7 @@ n" :prepend t :jump-to-captured t)
   (dumb-jump-selector 'completing-read)
   :config
   ;; Prepend globally so dumb-jump beats the default etags backend.
-  (add-hook 'xref-backend-functions #'dumb-jump-xref-activate))
+  (add-hook 'xref-backend-functions #'dumb-jump-xref-activate 100))
 
 
 ;; Ada support for dumb-jump (not built-in).
@@ -1039,9 +1300,7 @@ n" :prepend t :jump-to-captured t)
   (add-to-list 'eglot-server-programs
                '(protobuf-mode . ("buf" "lsp" "serve"))))
 
-(use-package eglot
-  :ensure nil ; Built-in
-  :config
+(with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs
                '(kotlin-mode . ("kotlin-language-server"))))
 
@@ -1052,13 +1311,6 @@ n" :prepend t :jump-to-captured t)
   :mode (("\\.ps1\\'"  . powershell-mode)
          ("\\.psm1\\'" . powershell-mode)
          ("\\.psd1\\'" . powershell-mode)))
-
-;; emeld-sidebar: a project file-tree sidebar that follows and highlights the
-;; active file (current-line overlay + follow are built in).  `C-x m' toggles
-;; it open/closed, rooted at the current file's project.
-(use-package emeld
-  :load-path "/home/jdyer/.emacs.d/offline-packages/local-packages/emeld"
-  :bind ("C-x m" . emeld-sidebar))
 
 (load (expand-file-name "obp-config" user-emacs-directory))
 
@@ -1216,9 +1468,9 @@ n" :prepend t :jump-to-captured t)
 
 (use-package transmute
   :load-path "~/.emacs.d/offline-packages/local-packages/transmute"
-  :demand t
+  :bind (:map my-overrides-mode-map
+              ("C-c I" . transmute-menu))
   :config
-  (define-key my-overrides-mode-map (kbd "C-c I") #'transmute-menu)
   (with-eval-after-load 'image-dired
     (transmute-setup-thumbnail-keys)))
 
@@ -1308,7 +1560,7 @@ n" :prepend t :jump-to-captured t)
   (my/demap-preserve-window))
 
 (add-to-list 'load-path "~/.emacs.d/offline-packages/local-packages/diff-minimap")
-(require 'diff-minimap)
+(autoload 'diff-minimap-toggle "diff-minimap" nil t)
 
 
 ;; (setq diff-minimap-viewport-style 'filled)
@@ -1362,18 +1614,34 @@ n" :prepend t :jump-to-captured t)
   ;; Open remotes in Firefox regardless of the system default browser.
   (setq project-overview-browse-url-function #'browse-url-firefox))
 
-(use-package markdown-mode)
+(use-package markdown-mode
+  :mode ("\\.md\\'" "\\.markdown\\'"))
 
-(add-to-list 'load-path "~/.emacs.d/offline-packages/local-packages/emeld")
-(require 'emeld)
-
-(global-set-key (kbd "C-c z d") 'emeld-diff-dwim)
-(global-set-key (kbd "C-c z j") 'emeld-load-preset)
-(global-set-key (kbd "C-c z l") 'emeld-load-preset)
-(global-set-key (kbd "C-c z s") 'emeld-save-preset)
-(global-set-key (kbd "C-c z x") 'emeld-delete-preset)
-;; (setq emeld-benchmark t)
-(setq emeld-dir-prefix "📁 ")
+;; emeld-sidebar: a project file-tree sidebar that follows and highlights the
+;; active file (current-line overlay + follow are built in).  `C-x m' toggles
+;; it open/closed, rooted at the current file's project.
+;;
+;; `C-c z' is the emeld compare namespace: d diff-dwim, j reopen a recent
+;; comparison; a marks the current dired directory as comparison side A,
+;; c compares it with the directory being browsed.
+(use-package emeld
+  :load-path "/home/jdyer/.emacs.d/offline-packages/local-packages/emeld"
+  :commands (emeld-diff-dwim emeld-recent)
+  :bind (("C-x m"   . emeld-sidebar)
+         ("C-c z d" . emeld-diff-dwim)
+         ("C-c z l" . emeld-recent)
+         ("C-c z a" . emeld-mark-dir-a)
+         ("C-c z c" . emeld-compare-marked-dirs)
+         ;; M-n / M-p are reserved for window navigation: emeld's change
+         ;; navigation moves to the shifted pair inside its own buffers.
+         :map emeld-mode-map
+         ("M-N"     . emeld-next-change)
+         ("M-P"     . emeld-previous-change)
+         ("M-n"     . nil)
+         ("M-p"     . nil))
+  :config
+  ;; (setq emeld-benchmark t)
+  (setq emeld-dir-prefix "📁 "))
 
 ;; 1. Classic solid triangles — medium (U+25BA / U+25BC)
 ;; (setq emeld-fold-collapsed-indicator "► "
@@ -1390,15 +1658,15 @@ n" :prepend t :jump-to-captured t)
 ;;
 ;; -> visuals
 ;;
-(set-frame-parameter nil 'alpha-background 90)
-(add-to-list 'default-frame-alist '(alpha-background . 90))
+(set-frame-parameter nil 'alpha-background 95)
+(add-to-list 'default-frame-alist '(alpha-background . 95))
 
 ;; $ emacs --batch --eval '(progn (find-file "/home/jdyer/.emacs.d/offline-packages/local-packages/emeld/emeld.el") (goto-char (point-min)) (condition-case nil (while (not (eobp)) (forward-sexp)) (error (message "Unbalanced at pos %d, line %d, col %d" (point) (line-number-at-pos) (current-column)))))' 2>&1
 ;; Unbalanced at pos 31818, line 693, col 62
 
 (use-package simply-kanban
-  :demand t
   :load-path "~/.emacs.d/offline-packages/local-packages/simply-kanban"
+  :commands (simply-kanban-show-card)
   :bind
   ("C-c K" . simply-kanban)
   ("C-c A" . simply-kanban-agenda))
@@ -1482,9 +1750,9 @@ n" :prepend t :jump-to-captured t)
 (with-eval-after-load 'outline-indent
   (define-key outline-indent-minor-mode-map (kbd "C-c o") #'outline-indent-transient)
   ;; Global fold/unfold across every outline-indent buffer (web-mode muscle memory).
-  (define-key outline-indent-minor-mode-map (kbd "C-c C-f") #'outline-cycle)
-  ;; TAB (C-i in GUI) toggles fold at point, same as C-c C-f.
-  (define-key outline-indent-minor-mode-map (kbd "C-i") #'outline-cycle))
+  ;; TAB keeps its standard indentation command in those buffers; folding is
+  ;; available here and on `C-c o'.
+  (define-key outline-indent-minor-mode-map (kbd "C-c C-f") #'outline-cycle))
 
 (defun my/elisp-outline-level ()
   "Outline level of the heading at point.
@@ -1514,7 +1782,6 @@ comment headers fold their section, definitions fold to the next one."
               (my/elisp-outline-fold-setup))))
 
 (use-package simply-annotate
-  :demand t
   :load-path "~/source/repos/simply-annotate"
   :hook (find-file-hook . simply-annotate-mode)
   :config
@@ -1552,7 +1819,8 @@ comment headers fold their section, definitions fold to the next one."
 (custom-set-faces
  '(mode-line-buffer-id ((t (:foreground "#EEEEFF" :weight bold)))))
 
-(use-package chess)
+(use-package chess
+  :defer t)
 
 (setq chess-images-separate-frame nil)
 (setq chess-images-default-size 64)
@@ -1588,7 +1856,9 @@ comment headers fold their section, definitions fold to the next one."
 
 ;;; 2. Robust native session listing (with JSON/data parsing & filtering support)
 (cl-defun opencode-list-sessions-native (&optional title-filter)
-  "Query the local OpenCode SQLite database and format active sessions.
+  "Query the local OpenCode SQLite database and render sessions as Org.
+Each session becomes a level-1 headline with a properties drawer, so
+folding, `org-goto', `imenu', sparse trees and `org-occur' work natively.
 If TITLE-FILTER is provided, filters results matching the session title."
   (interactive)
   (let* ((db-path (expand-file-name "~/.local/share/opencode/opencode.db"))
@@ -1634,26 +1904,25 @@ If TITLE-FILTER is provided, filters results matching the session title."
         (sqlite-close db)
         
         (with-current-buffer buf
-          (read-only-mode -1)
-          (erase-buffer)
-          (insert (propertize "OpenCode Sessions\n" 'face 'bold))
-          (if title-filter
-              (insert (propertize (format "Filter: \"%s\"  •  %d match(es), most recent first\n"
-                                          title-filter (length rows))
-                                  'face 'shadow))
-            (insert (propertize "Most recent first  •  click [Connect] to open in a terminal\n"
-                                'face 'shadow)))
-          (insert (propertize (make-string 72 ?─) 'face 'shadow) "\n\n")
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert "#+TITLE: OpenCode Sessions\n")
+            (insert "#+STARTUP: overview\n")
+            (if title-filter
+                (insert (format "#+SUBTITLE: Filter %S — %d match(es), most recent first\n\n"
+                                title-filter (length rows)))
+              (insert "#+SUBTITLE: Most recent first — TAB folds, org-goto / imenu jumps, Connect opens a terminal\n\n"))
 
-          (if (null rows)
-              (insert (propertize "No matching sessions found.\n" 'face 'warning))
-            (let ((n 0))
+            (if (null rows)
+                (insert "No matching sessions found.\n")
               (dolist (row rows)
-                (setq n (1+ n))
                 (let* ((id (nth 0 row))
                        (created-raw (nth 1 row))
                        (updated-raw (nth 2 row))
-                       (title (or (nth 3 row) "Untitled Session"))
+                       (title-raw (or (nth 3 row) "Untitled Session"))
+                       ;; Headlines, properties and tables must stay single-line.
+                       (title (string-trim
+                               (replace-regexp-in-string "[ \t\n]+" " " title-raw)))
                        (directory (nth 4 row))
                        (path (nth 5 row))
                        (model (or (nth 6 row) "default"))
@@ -1673,8 +1942,8 @@ If TITLE-FILTER is provided, filters results matching the session title."
                         (if (and last-msg-raw (not (string-empty-p last-msg-raw)))
                             (let ((text (string-trim
                                          (replace-regexp-in-string "[ \t\n]+" " " last-msg-raw))))
-                              (if (> (length text) 100)
-                                  (concat (substring text 0 97) "...")
+                              (if (> (length text) 400)
+                                  (concat (substring text 0 397) "...")
                                 text))
                           "No messages yet"))
 
@@ -1687,89 +1956,103 @@ If TITLE-FILTER is provided, filters results matching the session title."
                                                             (seconds-to-time (/ updated-raw 1000.0)))
                                       "Unknown")))
 
-                  ;; Numbered title header with inline [Connect] button.
-                  (insert (propertize (format "%2d. " n) 'face 'shadow))
-                  (insert (propertize title 'face 'bold))
-                  (insert "  ")
-                  (let ((start (point)))
-                    (insert "[Connect]")
-                    (make-button start (point)
-                                 'action (lambda (_) (opencode-open-session-terminal id project-root))
-                                 'follow-link t
-                                 'face 'success
-                                 'mouse-face 'highlight
-                                 'help-echo (format "Launch session %s in a new terminal" id)))
-                  (insert "\n")
-
-                  ;; Aligned detail lines: dim labels, plain values.
-                  (insert (propertize "    Session:    " 'face 'shadow)
-                          (propertize id 'face 'font-lock-comment-face) "\n")
-                  (insert (propertize "    Title:      " 'face 'shadow) title "\n")
-                  (insert (propertize "    Directory:  " 'face 'shadow) project-short "\n")
-                  (insert (propertize "    Agent:      " 'face 'shadow)
-                          (format "%s • %s\n" agent model))
-                  (insert (propertize "    Last:       " 'face 'shadow)
-                          (propertize (concat "\"" msg-snippet "\"") 'face 'font-lock-doc-face)
-                          "\n")
-                  (insert (propertize "    Activity:   " 'face 'shadow)
-                          (format "Created %s  •  Updated %s\n" created-str updated-str))
-                  (insert (propertize (make-string 72 ?─) 'face 'shadow) "\n\n")))))
-          (ansi-color-apply-on-region (point-min) (point-max))
-          (read-only-mode 1)
-          ;; Keep point/cursor at the top whenever the buffer is (re)built.
-          (goto-char (point-min)))
+                  ;; Each session is a level-1 Org headline so folding,
+                  ;; org-goto, imenu, sparse trees, etc. work natively.
+                  (insert (format "* %s\n" title))
+                  (insert ":PROPERTIES:\n")
+                  (insert (format ":SESSION_ID: %s\n" id))
+                  (insert (format ":DIRECTORY: %s\n" project-root))
+                  (insert (format ":AGENT: %s\n" agent))
+                  (insert (format ":MODEL: %s\n" model))
+                  (insert (format ":CREATED: %s\n" created-str))
+                  (insert (format ":UPDATED: %s\n" updated-str))
+                  (insert ":END:\n")
+                  (insert (format "- Directory :: %s\n" project-short))
+                  (insert (format "- Agent :: %s (%s)\n" agent model))
+                  (insert (format "- Activity :: Created %s, Updated %s\n"
+                                  created-str updated-str))
+                  (insert (format "- Session :: %s\n" id))
+                  (insert (format "- Connect :: [[elisp:(opencode-open-session-terminal %s %s)][Open in terminal]]\n"
+                                  (prin1-to-string id)
+                                  (prin1-to-string project-root)))
+                  (insert "- Last ::\n")
+                  (insert "#+BEGIN_QUOTE\n")
+                  (insert msg-snippet "\n")
+                  (insert "#+END_QUOTE\n\n"))))
+            (org-mode)
+            ;; Honour #+STARTUP even if the user overrides
+            ;; `org-startup-folded' globally.
+            (when (fboundp 'org-overview)
+              (ignore-errors (org-overview)))
+            (read-only-mode 1)
+            ;; Keep point/cursor at the top whenever the buffer is (re)built.
+            (goto-char (point-min))))
         ;; Display the buffer, focus its window, and park point at the top.
         (let ((win (display-buffer buf)))
           (when (window-live-p win)
             (select-window win)
             (set-window-point win (point-min))))))))
 
-;;; 3. Specialized search actions
-(defun opencode-occur-all-titles ()
-  "Instantly show all session titles in an Occur buffer without prompting."
-  (interactive)
-  (let ((buf (get-buffer "*OpenCode Sessions*")))
-    (unless buf
-      ;; Fallback: generate the buffer first if it doesn't exist
-      (opencode-list-sessions-native)
-      (setq buf (get-buffer "*OpenCode Sessions*")))
-    (with-current-buffer buf
-      ;; Match indented "Title:" detail lines (e.g. "    Title:      foo").
-      (occur "^[ \t]*Title:[[:space:]]+.*"))))
+(use-package gnuplot
+  :defer t)
 
-;;; 4. The Transient Dispatcher
-(transient-define-prefix opencode-dispatch ()
-  "Transient menu for OpenCode session management."
-  ["Manage Sessions"
-   ("l" "List Active (Recent)" opencode-list-sessions-native)
-   ("o" "Occur on Buffer Titles" opencode-occur-all-titles)]
-  ["Quit"
-   ("q" "Quit Menu" transient-quit-one)])
-
-(use-package gnuplot)
-
-(use-package zig-mode)
+(use-package zig-mode
+  :mode "\\.zig\\'")
 
 (setq tab-bar-auto-width-max '((120) 20))
 
-(load-theme 'doom-dracula t)
+(load-theme 'doom-lantern t)
 
 (define-key my-win-keymap (kbd "m") #'diff-minimap-toggle)
 
 ;;
-;; -> tab-line-core
+;; -> vlf — view very large files (e.g. SVN dumps) in batches
 ;;
-;; Inline per-window buffer tabs, rendered just below the tab-bar.
-;; Toggle with C-z i (my-win-keymap).
-(setq tab-line-tabs-function #'tab-line-tabs-buffer-groups)
-(setq tab-line-close-button-show nil)
-(setq tab-line-new-button-show nil)
-(setq tab-line-separator nil)
-(global-tab-line-mode 1)
-(define-key my-win-keymap (kbd "i")
-            (lambda () (interactive) (global-tab-line-mode 'toggle)))
-;; M-U / M-I switch tab-line buffers (M-u / M-i switch tab-bar tabs).
-(define-key my-overrides-mode-map (kbd "M-U") #'tab-line-switch-to-prev-tab)
-(define-key my-overrides-mode-map (kbd "M-I") #'tab-line-switch-to-next-tab)
+;; Usage:
+;;   M-x vlf <file>  — open any file in ~1 MiB chunks (works on multi-GB files)
+;;   V in dired      — open the file at point with VLF (wired up by vlf-setup)
+;;   C-c V           — open with VLF from anywhere (binding below)
+;; In a VLF buffer: n/p next/prev chunk, [/] first/last chunk, +/- resize
+;; chunk, s/r search forward/back over the whole file, o occur, l go to
+;; line, C-c C-v prefix for all VLF keys. Scrolling past the buffer limits
+;; auto-advances to the next/previous chunk.
+;;
+(use-package vlf
+  :ensure t
+  :custom
+  ;; Offer VLF when a file exceeds `large-file-warning-threshold'
+  ;; (default 10 MiB). Change to 'dont-ask to jump straight into VLF.
+  (vlf-application 'ask)
+  ;; Chunk size for local files. Auto-tuned at runtime (vlf-tune-enabled).
+  ;; 1 MiB is a good balance for line-oriented ASCII like SVN dumps.
+  (vlf-batch-size 1048576)
+  (vlf-tune-enabled t)
+  :config
+  ;; Hooks VLF into `abort-if-file-too-large' and defines `dired-vlf'.
+  (require 'vlf-setup)
+  ;; SVN dumps / generic dumps: keep them in fundamental-mode so no slow
+  ;; major-mode or font-lock runs over the chunk.
+  (add-to-list 'auto-mode-alist '("\\.svndump\\'" . fundamental-mode))
+  (add-to-list 'auto-mode-alist '("\\.dump\\'" . fundamental-mode))
+  ;; Safety net for very long single lines inside a chunk.
+  (when (fboundp 'global-so-long-mode)
+    (global-so-long-mode 1))
+  (define-key my-overrides-mode-map (kbd "C-c V") #'vlf)
+  (with-eval-after-load 'dired
+    (define-key dired-mode-map (kbd "V") #'dired-vlf)))
 
-(use-package valign)
+;; (use-package completion-preview
+;;   :ensure nil
+;;   :demand t
+;;   :bind
+;;   (:map completion-preview-active-mode-map
+;;         ("M-i" . completion-preview-insert-word)
+;;         ("M-n" . completion-preview-next-candidate)
+;;         ("M-p" . completion-preview-prev-candidate)
+;;         ("M-<return>" . completion-preview-insert)
+;;         ;; With TAB we effectively defer to the *Completions* buffer to
+;;         ;; show more completion candidates at once.
+;;         ("<tab>" . completion-preview-complete))
+;;   :config
+;;   (setq completion-preview-minimum-symbol-length 2)
+;;   (global-completion-preview-mode 1))
