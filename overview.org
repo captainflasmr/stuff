@@ -1,0 +1,90 @@
+#+TITLE: C2SIM Artifacts — Project Overview
+#+AUTHOR: James Dyer
+#+DATE: 2026-10-20
+#+STARTUP: overview
+#+OPTIONS: toc:nil
+
+* What This Project Is
+- Artifacts supporting the SISO C2SIM standard
+- C2SIM: Command and Control Systems — Simulation Systems Interoperation
+- Defines a shared, validated scenario contract for simulation initialization
+- Includes schemas, reference instances, ontology-derived products, and documentation
+- Vendor- and AI-generator-agnostic by design
+
+* Why C2SIM
+- C2SIM gives C2 and simulation systems a common semantic model
+- A scenario needs a stable contract before it can be executed
+- Reusable libraries avoid redefining platforms and environments per scenario
+- Traceability runs from standard → profile → instance → transformation
+- The profile adopts C2SIM meaning where it fits exactly, and extends it only where necessary
+
+* Repository at a Glance
+- =c2sim/= — MIMESIS scenario profile and Hybrid Navy example
+- =libraries/= — Simulation Object Library and Environment Library
+- =Ontology/= — C2SIM, SMX, and LOX RDF sources
+- =Derived products/= — generated XSD, RDF, and XSLT artifacts
+- =Documents/= — SISO standards and implementation guide
+- =spec.org= / =sandbox.org= — literate specification and working record
+
+* Architecture and Ownership
+- Scenario profile — scenario identity, context, organizations, entities, routes, experiments
+- SOL — reusable platforms, sensors, weapons, munitions, organizations, behaviours
+- Environment Library — weather, ocean, visibility, and time-of-day baselines
+- Transformation layer — simulator-specific mapping, such as VR-Forces
+- Rule: C2SIM first, then SOL, then Environment Library, then transformation, then MIMESIS extension
+
+* Scenario Profile
+- Root element: =MIMESISScenario=
+- Sections: Metadata, Context, Organizations, Entities, Routes, Environment, MissionSet, Experiment, Extensions
+- Imports C2SIM v1.0.1 definitions and pins only exact-fit slots
+- Each entity requires exactly one C2SIM =CurrentState= / =PhysicalState=
+- Profile rules tighten C2SIM: state time equals =TimeOrigin=; at most one health measure of each kind
+- Routes are profile-owned; C2SIM =Route= is an APP-6C tactical graphic, not a movement plan
+
+* Simulation Object Library
+- Six object kinds: platform, sensor, weapon, munition, organisation, behaviour
+- Stable object ID plus immutable version for every entry
+- Pins C2SIM type identity, organization codes, and standard =Resource= fit
+- MIMESIS-owned parameters cover platform physical, performance, and complement data
+- Scenario entities reference SOL objects by authority, object ID, and version
+- Current manifest: five entries; the example references four
+
+* Environment Library
+- C2SIM v1.0.1 has no weather, sea-state, visibility, or time-of-day model
+- Environmental conditions are therefore MIMESIS-owned
+- Baseline: weather, ocean, visibility, and time-of-day configuration
+- Stable environment ID plus version; scenario selects a baseline
+- Scenarios may apply limited local overrides without forking the library
+- Current example uses a North Atlantic Moderate baseline
+
+* Worked Example: Hybrid Navy
+- Type 26 frigate vs. submarine threat in the North Atlantic
+- Experiment: sonar-range sweep with a recorded seed and bounds
+- =hybrid-navy-minimal.xml= validates against the profile schema
+- Two entities: frigate uses =Heading=; submarine uses =EulerAngles= and two health measures
+- =frigate-asw-patrol-route= carries ordered waypoints with C2SIM position, speed, orientation, and timing
+- Demonstrates the full chain: profile → SOL → Environment → instance
+
+* Validation and Traceability
+- Layer 1: XML and C2SIM XSD validation
+- Layer 2: MIMESIS profile XSD validation
+- Layer 3: semantic and reference rules — IDs, versions, routes, time origin
+- Layer 4: SOL and Environment cross-document resolution
+- Layer 5: transformation readiness for a target simulator
+- XSD validity alone does not prove executability
+
+* Status and Next Steps
+- Done: synchronized minimal artifacts; InitialState contract; routes and waypoints; SOL/Environment C2SIM reviews
+- Done: two-entity validated example with a five-entry SOL catalogue
+- Open: confirm C2SIM v1.0.1 package provenance and approval
+- Open: finalize the MIMESIS namespace and profile version
+- Open: add the MIMESIS extension XSD, uniqueness rules, and positive/negative tests
+- Next: build the VR-Forces transformation adapter after the profile and SOL stabilize
+
+* Where to Look
+- =spec.org= — literate specification; tangle artifacts with =C-c C-v t=
+- =sandbox.org= — consolidated design record and decision log
+- =README.md= — project scope and OpenC2SIM link
+- =Documents/= — SISO-STD-019-2020, SISO-STD-020-2020, SISO-GUIDE-010-2020
+- =Ontology/= — C2SIM, SMX, and LOX RDF models
+- Questions and discussion
