@@ -12,7 +12,7 @@
 ;; (or restart Emacs). Values are in 1/10pt, so 105 means 10.5pt.
 ;; They override `Emacs-vanilla/init.el' `custom-set-faces' above.
 (defvar my/main-font-height 90
-  "Height for `default' and `fixed-pitch' faces.")
+  "Height for the `default' face.")
 (defvar my/variable-pitch-height 100
   "Height for `variable-pitch' face.")
 (defvar my/mode-line-height 90
@@ -21,8 +21,12 @@
 (defun my/apply-main-font-sizes ()
   "Apply `my/main-font-height' and related face heights."
   (set-face-attribute 'default nil :height my/main-font-height)
+  ;; Keep `fixed-pitch' relative to `default' so it follows
+  ;; `text-scale-mode' (used by `org-slides').  An absolute height here
+  ;; leaves code and tables small while the surrounding text is scaled up,
+  ;; which makes each code line look double-spaced.
   (when (facep 'fixed-pitch)
-    (set-face-attribute 'fixed-pitch nil :height my/main-font-height))
+    (set-face-attribute 'fixed-pitch nil :height 1.0))
   (when (facep 'variable-pitch)
     (set-face-attribute 'variable-pitch nil :height my/variable-pitch-height))
   (set-face-attribute 'mode-line nil :height my/mode-line-height)
@@ -203,43 +207,63 @@ n" :prepend t :jump-to-captured t)
   (setq org-table-fit-overlay-reveal-on-point nil))
 
 ;;
-;; -> org-present
+;; -> org-ibullets
+;;
+;; Display Org heading stars as UTF-8 bullets.  Installed from source with
+;; the built-in `:vc' backend; `:commands' keeps it lazy until an Org buffer
+;; is opened.  Disabling font-cache compaction keeps the composed bullets
+;; fast (see the package README).
+
+(use-package org-ibullets
+  :vc (:url "https://github.com/jamescherti/org-ibullets.el"
+       :rev :newest)
+  :commands org-ibullets-mode
+  :init
+  (setq my/org-ibullets-configured t)
+  :hook (org-mode . org-ibullets-mode))
+
+(setq inhibit-compacting-font-caches t)
+
+;;
+;; -> org-slides
 ;;
 ;; Present an Org file directly from the buffer: each top-level heading is
-;; one slide.  `C-c s p' starts the presentation; left/right move between
-;; slides and `C-c C-q' quits.  The hooks enlarge the text, show inline
-;; images, hide the cursor, and make the buffer read-only while presenting.
+;; one slide.  `C-c s p' starts the presentation; `n'/`SPC'/right move
+;; forward, `p'/`S-SPC'/left move back, and `q' quits.  The package handles
+;; the text scale, inline images, read-only mode, and cursor hiding itself.
 ;; (`C-c p' is taken by diff-minimap in Org buffers, hence the `s' prefix.)
-;; The source is vendored in offline-packages/local-packages/org-present, so
+;; The source is vendored in offline-packages/local-packages/org-slides, so
 ;; this needs no package archive; `:ensure nil' keeps startup offline-safe.
+;; Experimental: set `org-slides-page-style' to `split' to narrow each page
+;; to only that page's content and show "SLIDE.PAGE / TOTALS" in the mode line.
+;; The indicator is shown on every slide by default; set
+;; `org-slides-page-indicator' to `split' for only multi-page slides, or
+;; nil to disable it.  The title page is slide 0 and top-level headings are
+;; numbered 1, 2, ...
 ;;
-(use-package org-present
+(use-package org-slides
   :ensure nil
-  :load-path ("offline-packages/local-packages/org-present"
-              "local-packages/org-present")
-  :commands org-present
+  :load-path ("offline-packages/local-packages/org-slides"
+              "local-packages/org-slides")
+  :commands org-slides-start
   :init
-  (setq my/org-present-configured t)
+  ;; (setq my/org-slides-configured t)
   (with-eval-after-load 'org
-    (define-key org-mode-map (kbd "C-c s p") #'org-present))
+    (define-key org-mode-map (kbd "C-c s p") #'org-slides-start))
   :config
-  (add-hook 'org-present-mode-hook
-            (lambda ()
-              (org-present-big)
-              (org-display-inline-images)
-              ;; Cache the cursor before hiding it: `org-present-read-only'
-              ;; also records `cursor-type', so calling it first prevents it
-              ;; from clobbering the cached value with nil.
-              (org-present-read-only)
-              (org-present-hide-cursor)))
-  (add-hook 'org-present-mode-quit-hook
-            (lambda ()
-              (org-present-small)
-              (org-remove-inline-images)
-              ;; Restore a visible cursor even if the cache was empty.
-              (setq-local cursor-type (or org-present-cursor-cache t))
-              (org-present-show-cursor)
-              (org-present-read-write))))
+  (setq org-slides-page-style 'split)
+  (setq org-slides-text-scale 3)
+  (setq org-slides-hide-stars-in-headings nil)
+  (setq org-slides-hide-cursor-on-start nil)
+  ;; Refit displayed tables after org-slides narrows to a slide.  The
+  ;; text-scale refresh can run while the title page is current, and slide
+  ;; navigation does not otherwise retrigger it, so wide tables can keep
+  ;; their old layout until the window is resized.
+  (add-hook 'org-slides-after-navigate-functions
+            (lambda (&rest _)
+              (when (and (bound-and-true-p org-table-fit-overlay-mode)
+                         (fboundp 'org-table-fit-refresh-overlays))
+                (org-table-fit-refresh-overlays)))))
 
 ;;
 ;; -> org sell summaries
@@ -1658,8 +1682,8 @@ mu4e's own header-line content once the update is done."
 ;;
 ;; -> visuals
 ;;
-(set-frame-parameter nil 'alpha-background 95)
-(add-to-list 'default-frame-alist '(alpha-background . 95))
+(set-frame-parameter nil 'alpha-background 98)
+(add-to-list 'default-frame-alist '(alpha-background . 98))
 
 ;; $ emacs --batch --eval '(progn (find-file "/home/jdyer/.emacs.d/offline-packages/local-packages/emeld/emeld.el") (goto-char (point-min)) (condition-case nil (while (not (eobp)) (forward-sexp)) (error (message "Unbalanced at pos %d, line %d, col %d" (point) (line-number-at-pos) (current-column)))))' 2>&1
 ;; Unbalanced at pos 31818, line 693, col 62
@@ -2001,7 +2025,8 @@ If TITLE-FILTER is provided, filters results matching the session title."
 
 (setq tab-bar-auto-width-max '((120) 20))
 
-(load-theme 'doom-lantern t)
+;; (load-theme 'doom-lantern t)
+(load-theme 'doom-molokai t)
 
 (define-key my-win-keymap (kbd "m") #'diff-minimap-toggle)
 
