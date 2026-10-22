@@ -216,7 +216,7 @@ n" :prepend t :jump-to-captured t)
 
 (use-package org-ibullets
   :vc (:url "https://github.com/jamescherti/org-ibullets.el"
-       :rev :newest)
+            :rev :newest)
   :commands org-ibullets-mode
   :init
   (setq my/org-ibullets-configured t)
@@ -228,33 +228,39 @@ n" :prepend t :jump-to-captured t)
 ;; -> org-slides
 ;;
 ;; Present an Org file directly from the buffer: each top-level heading is
-;; one slide.  `C-c s p' starts the presentation; `n'/`SPC'/right move
+;; one slide.  `C-c P' starts the presentation; `n'/`SPC'/right move
 ;; forward, `p'/`S-SPC'/left move back, and `q' quits.  The package handles
 ;; the text scale, inline images, read-only mode, and cursor hiding itself.
-;; (`C-c p' is taken by diff-minimap in Org buffers, hence the `s' prefix.)
+;; `C-c s' is the global spelling-menu prefix, so use capital `P' for slides.
 ;; The source is vendored in offline-packages/local-packages/org-slides, so
 ;; this needs no package archive; `:ensure nil' keeps startup offline-safe.
 ;; Experimental: set `org-slides-page-style' to `split' to narrow each page
 ;; to only that page's content and show "SLIDE.PAGE / TOTALS" in the mode line.
+;; SPC/f reveals the next Org list item; S-SPC (or b/S-TAB/Backspace)
+;; re-shadows the previous one.
 ;; The indicator is shown on every slide by default; set
 ;; `org-slides-page-indicator' to `split' for only multi-page slides, or
 ;; nil to disable it.  The title page is slide 0 and top-level headings are
 ;; numbered 1, 2, ...
 ;;
+
 (use-package org-slides
   :ensure nil
   :load-path ("offline-packages/local-packages/org-slides"
               "local-packages/org-slides")
-  :commands org-slides-start
+  :commands (org-slides-start org-slides-timed-macro-toggle)
+  :bind (("C-c T" . org-slides-timed-macro-toggle)
+         :map org-mode-map
+         ("C-c P" . org-slides-start))
   :init
   ;; (setq my/org-slides-configured t)
   (with-eval-after-load 'org
-    (define-key org-mode-map (kbd "C-c s p") #'org-slides-start))
+    (define-key org-mode-map (kbd "C-c P") #'org-slides-start))
   :config
   (setq org-slides-page-style 'split)
   (setq org-slides-text-scale 3)
   (setq org-slides-hide-stars-in-headings nil)
-  (setq org-slides-hide-cursor-on-start nil)
+  ;; (setq org-slides-hide-cursor-on-start nil)
   ;; Refit displayed tables after org-slides narrows to a slide.  The
   ;; text-scale refresh can run while the title page is current, and slide
   ;; navigation does not otherwise retrigger it, so wide tables can keep
@@ -2025,8 +2031,9 @@ If TITLE-FILTER is provided, filters results matching the session title."
 
 (setq tab-bar-auto-width-max '((120) 20))
 
-;; (load-theme 'doom-lantern t)
-(load-theme 'doom-molokai t)
+(load-theme 'doom-lantern t)
+;; (load-theme 'doom-molokai t)
+;; (load-theme 'ef-trio-dark t)
 
 (define-key my-win-keymap (kbd "m") #'diff-minimap-toggle)
 
@@ -2081,3 +2088,4 @@ If TITLE-FILTER is provided, filters results matching the session title."
 ;;   :config
 ;;   (setq completion-preview-minimum-symbol-length 2)
 ;;   (global-completion-preview-mode 1))
+
