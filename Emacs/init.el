@@ -6,13 +6,6 @@
 (load-file "~/.emacs.d/Emacs-vanilla/init.el")
 
 ;;
-;; -> fonts
-;;
-;; Font heights and `my/apply-main-font-sizes' moved to
-;; Emacs-vanilla/init.el (`font-size-core').  C-z z resets the display
-;; scale after buffer or global zooming.
-
-;;
 ;; -> package-archives
 ;;
 
@@ -1189,10 +1182,11 @@ mu4e's own header-line content once the update is done."
 (add-to-list 'load-path "~/.emacs.d/offline-packages/local-packages/diff-minimap")
 (autoload 'diff-minimap-toggle "diff-minimap" nil t)
 
-
-;; (setq diff-minimap-viewport-style 'filled)
 ;; (setq diff-minimap-viewport-style 'edge-bar)
 ;; (setq diff-minimap-viewport-style 'stipple)
+;; (setq diff-minimap-viewport-style 'filled)
+;; (setq diff-minimap-viewport-style 'outline)
+
 ;; (setq diff-minimap-stipple-pattern 'dots-sparse)
 ;; (setq diff-minimap-colour-source 'diff-hl)
 ;; (setq diff-minimap-font-scale 0.2)
@@ -1664,6 +1658,7 @@ comment headers fold their section, definitions fold to the next one."
 
 (use-package simply-annotate
   :load-path "~/source/repos/simply-annotate"
+  :demand t
   :hook (find-file-hook . simply-annotate-mode)
   :config
   (let ((my-ms-map (make-sparse-keymap)))
@@ -1673,6 +1668,23 @@ comment headers fold their section, definitions fold to the next one."
     (define-key my-ms-map (kbd "i")
                 (lambda () (interactive) (my/tab-bar-push-window 1)))
     (define-key my-overrides-mode-map (kbd "M-s") my-ms-map))
+  (define-key simply-annotate-mode-map (kbd "M-N") #'simply-annotate-next)
+  (define-key simply-annotate-mode-map (kbd "M-P") #'simply-annotate-previous)
+  (defun my/simply-annotate-next-or-flymake ()
+    "Go to the next annotation, or the next flymake error when not annotating."
+    (interactive)
+    (if (bound-and-true-p simply-annotate-mode)
+        (simply-annotate-next)
+      (call-interactively #'flymake-goto-next-error)))
+  (defun my/simply-annotate-previous-or-flymake ()
+    "Go to the previous annotation, or the previous flymake error when not annotating."
+    (interactive)
+    (if (bound-and-true-p simply-annotate-mode)
+        (simply-annotate-previous)
+      (call-interactively #'flymake-goto-prev-error)))
+  (with-eval-after-load 'flymake
+    (define-key flymake-mode-map (kbd "M-N") #'my/simply-annotate-next-or-flymake)
+    (define-key flymake-mode-map (kbd "M-P") #'my/simply-annotate-previous-or-flymake))
   (require 'posframe)
   (setq simply-annotate-inline-position 'margin-right)
   (setq simply-annotate-tint-amount 50)
@@ -1709,7 +1721,16 @@ comment headers fold their section, definitions fold to the next one."
 (use-package zig-mode
   :mode "\\.zig\\'")
 
-(load-theme 'doom-material-dark t)
+;;
+;; -> favourite-themes
+;;
+;; Pick one at a time; the others stay commented so they are easy to
+;; swap.  `gruvbox-dark-hard' comes from `gruvbox-theme' and
+;; `ef-trio-dark' from `ef-themes'.
+;;
+;; (load-theme 'gruvbox-dark-hard t)
+(load-theme 'doom-tokyo-night t)
+;; (load-theme 'doom-material-dark t)
 ;; (load-theme 'doom-outrun-electric t)
 ;; (load-theme 'doom-manegarm t)
 ;; (load-theme 'ef-trio-dark t)
@@ -1767,3 +1788,21 @@ comment headers fold their section, definitions fold to the next one."
 ;;   :config
 ;;   (setq completion-preview-minimum-symbol-length 2)
 ;;   (global-completion-preview-mode 1))
+
+;; Slight transparency on the frame background. Harmless in TTY/Wayland
+;; environments that don't support it.
+(set-frame-parameter nil 'alpha-background 80)
+(add-to-list 'default-frame-alist '(alpha-background . 80))
+
+;;
+;; -> fonts
+;;
+;; Emacs-vanilla/init.el owns the default font sizes.  Override them here
+;; per machine without editing that module.  `default' and
+;; `variable-pitch' are in 1/10pt; `fixed-pitch' and `mode-line' are
+;; relative to `default'.  Uncomment and adjust for the current display.
+;;
+(my/set-font-size-overrides
+ '((default . 90)
+   (variable-pitch . 100)
+   (mode-line . 1.0)))
