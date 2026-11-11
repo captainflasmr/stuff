@@ -35,15 +35,12 @@
   :custom
   (selected-window-accent-fringe-minimum 10)
   (selected-window-accent-fringe-thickness 10)
-  (selected-window-accent-custom-color nil)
   (selected-window-accent-mode-style 'default)
-  (selected-window-accent-percentage-darken 20)
-  (selected-window-accent-percentage-desaturate 20)
   (selected-window-accent-tab-accent t)
   (selected-window-accent-use-pywal t)
   (selected-window-accent-smart-borders nil))
 
-;; (define-key my-overrides-mode-map (kbd "C-c w") selected-window-accent-map)
+(define-key my-overrides-mode-map (kbd "C-c w") selected-window-accent-map)
 
 ;;
 ;; -> org-table-fit
@@ -134,6 +131,10 @@
   :defer t)
 (use-package i3wm-config-mode
   :defer t)
+(use-package xkb-mode
+  :ensure nil
+  :load-path "~/source/repos/xkb-mode"
+  :mode "\\.xkb\\'")
 (use-package yaml-mode
   :mode ("\\.yml\\'" "\\.yaml\\'"))
 
@@ -1225,6 +1226,9 @@ mu4e's own header-line content once the update is done."
               (expand-file-name "~/.emacs.d/offline-packages")
               (expand-file-name "~/.emacs.d/offline-packages/local-packages")
               (expand-file-name "~/source/repos")
+              ;; The dotfiles repo itself (hidden, so it is not found by
+              ;; scanning a parent one level deep).
+              (expand-file-name "~/.config")
               (expand-file-name "~/.config/sway")
               (expand-file-name "~/source")
               (expand-file-name "~/bin")))
@@ -1702,6 +1706,19 @@ comment headers fold their section, definitions fold to the next one."
   (setq simply-annotate-author-list '("John Doe" "Jane Smith" "James Dyer"))
   (setq simply-annotate-prompt-for-author 'threads-only)  ; Prompt only for replies
   (setq simply-annotate-database-strategy 'both)
+  ;; Project roots can be read-only.  Fall back to the writable global
+  ;; database when the project-local database cannot be written, instead
+  ;; of silently failing to persist annotations.
+  (defun my/simply-annotate--database-path (orig)
+    "Use the project database when writable, else the global database."
+    (let ((path (funcall orig)))
+      (if (file-writable-p path)
+          path
+        (expand-file-name simply-annotate-file))))
+  (unless (advice-member-p #'my/simply-annotate--database-path
+                           'simply-annotate--database-path)
+    (advice-add 'simply-annotate--database-path :around
+                #'my/simply-annotate--database-path))
   (setq simply-annotate-display-style '(bracket))
   ;; (setq simply-annotate-inline-default t)
   )
@@ -1791,8 +1808,8 @@ comment headers fold their section, definitions fold to the next one."
 
 ;; Slight transparency on the frame background. Harmless in TTY/Wayland
 ;; environments that don't support it.
-(set-frame-parameter nil 'alpha-background 80)
-(add-to-list 'default-frame-alist '(alpha-background . 80))
+(set-frame-parameter nil 'alpha-background 90)
+(add-to-list 'default-frame-alist '(alpha-background . 90))
 
 ;;
 ;; -> fonts

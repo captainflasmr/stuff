@@ -9,40 +9,93 @@
 #+exclude_tags: noexport
 #+filetags: :@emacs:@linux:
 
-* TODO Emacs 31 Does Git Worktrees Natively: How My vc Setup Compares :emacs:vc:git:worktree:2026:
+* TODO Making Git Changes Obvious in the Emacs Mode Line :emacs:vc:git:2026:
 :PROPERTIES:
-:EXPORT_FILE_NAME: 20260907140012-emacs--Emacs-31-Native-Git-Worktrees-vs-My-vc-Setup
+:EXPORT_FILE_NAME: 20261024120000-emacs--Making-Git-Changes-Obvious-in-the-Mode-Line
 :EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-09-07 Mon 14:00>
+:EXPORT_HUGO_LASTMOD: <2026-10-24 Sat 12:00>
 :END:
 
-Well this is awkward timing. No sooner had I finished bolting worktree management onto built-in =vc= than I installed the bleeding edge and found Emacs 31 went and did it properly. Right there in the 31 NEWS: a whole =C-x v w= working-tree map, backed by real backend API. So before I get too attached to my own code I thought I had better do an honest head-to-head — I read the NEWS entries, read the implementation, and ran every command against scratch repos on a master build to make sure I am comparing against reality and not my assumptions. Verdict up front: I am keeping mine, with one key moved. Here is why.
+Emacs already tells you when a version-controlled file has local changes, but it does it with a punctuation mark: a clean file shows =Git-master= in the mode line, and a modified file shows =Git:master=. The only difference is the separator, and if the theme leaves the VC state faces unspecified there is not even a colour change. I wanted something I could see without stopping to parse the mode line, without adding another package or another Git subprocess. The result is a single bold status letter at the start of the mode line: =M= for modified, =A= for added, =D= for deleted, =U= for a conflict, and =L= for a lock.
 
 #+hugo: more
 
-First, what 31 actually ships. Note the terminology: upstream says "working tree" throughout, never "worktree". Eight bindings under =C-x v w=:
+The built-in =vc= integration puts a backend/state string in the mode line. For Git it looks like this:
 
-- =w c= (=vc-add-working-tree=) prompts for a directory, then a branch: empty means detached =HEAD=, an existing branch is checked out, a new name creates it with a start point. Then it just stops — no status buffer, no =vc-dir=, you are on your own.
-- =w w= (=vc-switch-working-tree=) jumps to the /same file/ in another tree. Lovely idea, completely different from my switch-to-=vc-dir=.
-- =w k= (=vc-kill-other-working-tree-buffers=) kills buffers visiting this file elsewhere. Read that twice: it does /not/ delete the tree, despite the letter.
-- =w s= (=vc-working-tree-switch-project=) is =project-switch-project= limited to trees sharing the same backing repo, with a matching =project-find-matching-buffer= helper for hopping between same-named files.
-- =w a= and =w A= (=vc-apply-to-other-working-tree= and =vc-apply-root-to-other-working-tree=) copy a fileset's changes — or the whole tree's — into another tree, and with a prefix argument /move/ them. This is the Transplant mechanic and it is genuinely something mine cannot do.
-- =w x= (=vc-delete-working-tree=) deletes the directory outright (to trash) and prunes. No =--force= dance because there is no =git worktree remove= involved at all, which also means it works on ancient gits.
-- =w R= (=vc-move-working-tree=) relocates, and the implementation is cleverer than mine: on recent git it renames the directory and runs =worktree repair=, which means it can even move the /main/ tree, something plain =git worktree move= flatly refuses. Older gits fall back through =worktree move= to a clean version error.
+| State            | Mode line    | Indicator |
+|------------------+--------------+-----------|
+| Clean            | =Git-master= | =-=       |
+| Modified         | =Git:master= | =:=       |
+| Added            | =Git@master= | =@=       |
+| Conflict/removed | =Git!master= | =!=       |
+| Missing          | =Git?master= | =?=       |
 
-I verified the add, same-file jump and delete paths by driving them in batch mode, and they behave exactly as documented — with one rough edge worth knowing: the switch command assumes =project.el= is loaded and falls over with a void-variable error in a minimal session that never pulled it in. Fine in practice, but it tells you the feature grew up assuming a full desktop session.
+Hovering over the string gives the full description ("Locally modified file under the Git version control system"), and clicking it opens the VC menu. That is all useful, but the separator is not a status indicator you notice at a glance. =C-x v == and =C-x v d= are there when you want the details.
 
-Now the head-to-head, feature by feature. Creating: theirs prompts bare directory-then-branch, mine offers a =project-branch= sibling default and lands you in =vc-dir=. Switching: theirs is file-grained, mine is status-buffer-grained — complementary, not competing. Listing: theirs has no list command at all beyond completion prompts (though the backend exposes =vc-git-known-other-working-trees= for lisp), while my =Z l= buffer stays. Pruning: no built-in command, mine stays. Moving: theirs is strictly better, full stop. Deleting: theirs is safer on old gits and trashes instead of destroying; mine understands =--force= and rescues a =vc-dir= sitting inside the dead tree. And branches — rename, delete, merge, list — have no built-in counterpart whatsoever; 31's branch work went into logging (more on that below), so my whole branch map stands unopposed.
+The mode line string is a propertized string, and its face encodes the VC state. Reading that face is cheap: no =vc-state= call, no =git status=, just a property lookup on a value VC has already computed. I map the faces to the same letters Git uses:
 
-Under the bonnet the two implementations rhyme amusingly. Both parse =git worktree list --porcelain=, except theirs prunes first and uses =-z= output on git 2.36+, and both have a current-branch helper — mine via =branch --show-current=, theirs via =symbolic-ref HEAD=. Great minds and all that.
+#+begin_src elisp
+  (defface my/vc-dirty-indicator-face
+    '((t :weight bold))
+    "Face for the mode-line local-changes indicator.
+    Only the weight is set, so the foreground and background follow the
+    mode line's normal colours."
+    :group 'vc)
 
-So much for behaviour; now keys, because this is where it bit me. My maps live on =Z= (worktrees, Magit-style) and =b= (branches, stock-style). Against 31's =C-x v w= map: =w k= kills buffers where mine removes trees, and =w s= switches projects where mine opens =vc-dir= — same letters, different continents. That settled it: the =Z= prefix stays, precisely /because/ =w= is now taken with conflicting semantics, and note =vc-dir= itself has no built-in worktree keys at all, so =Z= there is uncontested territory. But the audit caught one genuine collision: 31 binds =C-x v b L= to the new =vc-print-root-branch-log=, which is exactly where my branch list sat. That has now moved to =b B= (for Branches) in both maps, and everything else verified collision-free against a master build.
+  (defun my/vc-dirty-indicator ()
+    "Return a Git-style status letter for local VCS changes."
+    (let* ((face (and (bound-and-true-p vc-mode)
+                      (stringp vc-mode)
+                      (> (length vc-mode) 1)
+                      (get-text-property 1 'face vc-mode)))
+           (info (pcase face
+                   ('vc-edited-state '("M" "Locally modified file"))
+                   ('vc-locally-added-state '("A" "Locally added file"))
+                   ('vc-conflict-state '("U" "File contains merge conflicts"))
+                   ('vc-removed-state '("D" "File removed from version control"))
+                   ('vc-missing-state '("D" "Tracked file missing from disk"))
+                   ('vc-locked-state '("L" "File locked by another user")))))
+      (when info
+        (propertize (concat (car info) " ")
+                    'face 'my/vc-dirty-indicator-face
+                    'help-echo (cadr info)))))
+#+end_src
 
-What I am stealing, or at least circling: the prune-before-listing habit is obviously right, the trash-first delete is kinder than =--force= bravado, and the repair-based move handling the main tree is something =git worktree move= simply cannot do. The changeset transplant (=w a=) is the one I may just use as-is rather than reimplement — some things are better borrowed than rebuilt. What I am not giving up: the =vc-dir=-first workflow, the sibling defaults, the list buffer, and the entire branch map, none of which upstream touches.
+Then put it at the start of the mode line. The install function removes any previous copy first, so reloading the config does not give you two indicators:
 
-Since I had the NEWS open anyway, here is the rest of what 31 (plus a little incoming 32) does for =vc=, because it is a bumper release and some of it is excellent. Log View grew teeth: =C= cherry-picks, =R= undoes a revision, =x= rewinds the branch past point (capital =X= also restores the files), and =e= can now edit Git commit messages in place. =vc-dir= got =V= to check in the whole buffer ignoring marks, =z d= and =D= to delete stashes, mass-mark prompting instead of stubborn refusals, mixed-fileset registration on checkin, saner missing-versus-removed handling, auto-hiding of up-to-date entries, Magit-style save-before-refresh, an outgoing-revision count in the header, directory-aware reverting on =@= (also =C-x v @=), file renaming on =C-x v R=, and unregistered-file deletion. Branch logs split in two: =b l= is now the fileset log and =b L= the root log. Review tooling is the quiet star: incoming, outgoing, unintegrated-against-merge-base and combined-local diffs and logs, with optional =I=, =O=, =T= and =E= prefix maps to hang them on. Safety improved with history-rewrite detection you must explicitly opt out of, per-backend conflict-resolution options, an auto-revert mode limited to tracked files, async checkins, and an interactive =vc-clone=. Mercurial users get changeset hashes in annotate and working-revision instead of local revision numbers. On master, the outgoing count went asynchronous, =vc-dir= shows key hints, giant status output gets cut off with an override button, and symlink handling got saner.
+#+begin_src elisp
+  (defun my/vc-dirty-indicator--install ()
+    "Insert the dirty indicator at the start of `mode-line-format'."
+    (let* ((indicator '(:eval (my/vc-dirty-indicator)))
+           (fmt (default-value 'mode-line-format)))
+      (when (and (listp fmt) fmt)
+        (setq fmt (delete indicator fmt))
+        (let ((new nil)
+              (inserted nil))
+          (dolist (item fmt)
+            (push item new)
+            (when (and (not inserted) (eq item 'mode-line-front-space))
+              (push indicator new)
+              (setq inserted t)))
+          (unless inserted
+            (push indicator new))
+          (setq-default mode-line-format (nreverse new))))))
 
-That is a lot of new machinery, and most of it I will simply enjoy for free the day my daily driver catches up. The worktree core though — that little =Z= map and its branch sibling — stays mine: upstream built the backend-to-buffer plumbing, I built the workflow layer, and after this week's comparison I am fairly confident the two dovetail rather than duplicate. Next job is backporting the good ideas: prune-first listing at the very least, and maybe a transplant of my own. But not today. Today I am just pleased the rumour was true.
+  (my/vc-dirty-indicator--install)
+#+end_src
+
+The face sets only =:weight bold=, so the letter uses whatever foreground and background the mode line already has. I tried a red background first; it was too loud, and the bold letter is enough.
+
+- Clean file: no letter.
+- Saved but uncommitted change: =M= at the start of the mode line.
+- New file after =git add=: =A=.
+- Staged or working-tree deletion: =D=.
+- Merge conflict: =U=.
+- Missing tracked file: =D= with a "missing from disk" tooltip.
+
+The existing =**= indicator still means the buffer has unsaved edits; the version-control letter follows the state VC knows about and updates when VC refreshes the mode line, such as after saving or a VC operation. Untracked files do not get a =?= letter because =vc= does not install a mode-line state for unregistered files; =C-x v d= or =git status= remains the place to see those.
+
+The mode-line letter answers the smaller, more frequent question: is this file carrying local changes right now? One character, no extra processes, and no guessing what a colon means.
 * TODO Emacs Keys in Bash: Flyline as a Fish Substitute :emacs:bash:flyline:fish:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260906120000-emacs--Emacs-Keys-in-Bash-Flyline-as-a-Fish-Substitute
@@ -50,13 +103,13 @@ That is a lot of new machinery, and most of it I will simply enjoy for free the 
 :EXPORT_HUGO_LASTMOD: <2026-09-06 Sat 12:00>
 :END:
 
-** Why?
-
-When I can't install =fish= (locked-down server, shared box, minimal container), I still want two things: modern completion popups and fish-like autosuggestions. [[https://github.com/HalFrgrd/flyline][Flyline]] — a Rust =readline= replacement loaded as a Bash builtin — gives me both without leaving =bash=:
+When I can't install =fish= (locked-down server, shared box, minimal container), I still want two things: modern completion popups and fish-like autosuggestions. [[https://github.com/HalFrgrd/flyline][Flyline]] - a Rust =readline= replacement loaded as a Bash builtin - gives me both without leaving =bash=:
 
 - IntelliSense-style completion popup (=Tab=, fuzzy filtering, mouse)
 - Fish-like inline suggestions from history (accept with =Right= /=End= at EOL)
 - Fuzzy history search on =C-r=
+
+#+hugo: more 
 
 Install is one line, no =sudo=:
 
@@ -65,21 +118,18 @@ Install is one line, no =sudo=:
   # then in ~/.bashrc:
   enable flyline 2>/dev/null || enable -f "$HOME/.local/lib/libflyline.so" flyline
 #+end_src
-#+hugo: more
-
-** The Emacs layer
 
 Bash defaults to Emacs keys, but Flyline's popup is driven by =Up= /=Down= /=Enter= /=Escape=. I bridge the two so my fingers never leave home row. =C-p= / =C-n= for movement, =C-j= / =C-m= for "yes", =C-g= for =keyboard-quit=.
 
-*** C-p / C-n: move (completions, history, lines)
+** C-p / C-n: move (completions, history, lines)
 #+begin_src sh
   flyline key remap Ctrl+P Up
   flyline key remap Ctrl+N Down
 #+end_src
 
-A remap — not a bind — so =C-p= /=C-n= /inherit/ everything =Up= /=Down= does: move in the completion list when it's open, otherwise step through previous commands (history), including multiline cursor movement. This is the README's own recommended trick for duplicating =Up=.
+A remap - not a bind - so =C-p= /=C-n= /inherit/ everything =Up= /=Down= does: move in the completion list when it's open, otherwise step through previous commands (history), including multiline cursor movement. This is the README's own recommended trick for duplicating =Up=.
 
-*** C-j / C-m: accept (=Enter=)
+** C-j / C-m: accept (=Enter=)
 #+begin_src sh
   flyline key bind Ctrl+j tabCompletionEntrySelected=tabCompletionAcceptEntry
   flyline key bind Ctrl+m tabCompletionEntrySelected=tabCompletionAcceptEntry
@@ -87,15 +137,13 @@ A remap — not a bind — so =C-p= /=C-n= /inherit/ everything =Up= /=Down= doe
 
 Purists note: =C-j= already aliases =Enter= in Flyline's defaults, and =C-m= (=\\r=) usually /arrives/ as =Enter=. These two lines just make it explicit (and robust under the kitty keyboard protocol): when an entry is selected in the popup, =C-j= /=C-m= accept it exactly like =Enter=.
 
-*** C-g: dismiss (=Escape=)
+** C-g: dismiss (=Escape=)
 #+begin_src sh
   flyline key bind Ctrl+g tabCompletionAvailable=escapeToNormalMode
   flyline key bind Ctrl+g fuzzyHistorySearch=escapeToNormalMode
 #+end_src
 
 Emacs =keyboard-quit= as =Escape=: close the completion popup, or back out of the =C-r= fuzzy-history dialog. The two contexts are mutually exclusive, so both lines coexist peacefully.
-
-** Full snippet for =~/.bashrc=
 
 Put it right after the =enable flyline= line:
 
@@ -113,9 +161,7 @@ Put it right after the =enable flyline= line:
 
 Verify with =flyline key list Ctrl+n=, then type =ls <Tab>= and drive the whole popup without arrow keys.
 
-** Offline install (no network, no sudo)
-
-The =install.sh= script itself needs network — it detects your target triple and downloads =libflyline-<version>-<target>.tar.gz= plus its =.sha256= from GitHub releases. For an air-gapped box, do the download on a connected machine and sneakernet the tarball over:
+The =install.sh= script itself needs network - it detects your target triple and downloads =libflyline-<version>-<target>.tar.gz= plus its =.sha256= from GitHub releases. For an air-gapped box, do the download on a connected machine and sneakernet the tarball over:
 
 - Pick the asset matching the *offline* machine: =x86_64-unknown-linux-gnu= on most servers (=musl= only for Alpine/Chimera-style distros), plus the =_pre_bash_4_4= variant if its Bash is older than 4.4.
 - If you manage a mixed fleet, download one tarball per platform.
@@ -134,11 +180,9 @@ And in =~/.bashrc=:
   enable flyline 2>/dev/null || enable -f "$HOME/.local/lib/libflyline.so" flyline
 #+end_src
 
-Open a new Bash and check =enable | grep flyline=. The installer does a =bash -c "enable -f ..."= dlopen smoke test before touching =~/.bashrc= — worth replicating if a machine silently fails to load (you picked the wrong arch/libc build).
+Open a new Bash and check =enable | grep flyline=. The installer does a =bash -c "enable -f ..."= dlopen smoke test before touching =~/.bashrc= - worth replicating if a machine silently fails to load (you picked the wrong arch/libc build).
 
-** Enterprise boxes: SLES 15 SP4
-
-Yes — on =x86_64=, =aarch64= or =ppc64le=. (No =s390x= asset exists, so IBM Z is out.) SLES 15 SP4 ships Bash 4.4 — exactly Flyline's minimum for the standard build — and glibc 2.31, comfortably above Flyline's 2.23 build floor (releases are built on Ubuntu 16.04 precisely for old-glibc compatibility). Fitting, since SP4 moved =fish= itself out of base SLE into Package Hub.
+Yes - on =x86_64=, =aarch64= or =ppc64le=. (No =s390x= asset exists, so IBM Z is out.) SLES 15 SP4 ships Bash 4.4 - exactly Flyline's minimum for the standard build - and glibc 2.31, comfortably above Flyline's 2.23 build floor (releases are built on Ubuntu 16.04 precisely for old-glibc compatibility). Fitting, since SP4 moved =fish= itself out of base SLE into Package Hub.
 
 Four checks before committing:
 
@@ -149,89 +193,169 @@ Four checks before committing:
   help enable | grep -- -f   # want the -f flag: loadable-builtin support
 #+end_src
 
-If all four pass, the normal installer works (it needs =curl= or =wget= plus =tar=). Caveat: on *SLES 12* SP4 it's dicier — Bash 4.3 needs the =_pre_bash_4_4= asset and glibc 2.22 sits just below the 2.23 floor, so try the =gnu= asset first and build from source (=cargo build=) if you see =GLIBC_2.23 not found=.
+If all four pass, the normal installer works (it needs =curl= or =wget= plus =tar=). Caveat: on *SLES 12* SP4 it's dicier - Bash 4.3 needs the =_pre_bash_4_4= asset and glibc 2.22 sits just below the 2.23 floor, so try the =gnu= asset first and build from source (=cargo build=) if you see =GLIBC_2.23 not found=.
 
-** Verdict
-
-On machines where =fish= is not an option, this five-line Emacs layer on top of Flyline gets me ~90% of what I miss: fish-like grey-text suggestions as I type, a real popup with fuzzy narrowing instead of dumb =Tab= cycling, and zero Emacs unlearning. Bash stays Bash — just with modern manners.
-* TODO Filling a Whole Org Document in One Keystroke :emacs:org:fill:elisp:2026:
+On machines where =fish= is not an option, this five-line Emacs layer on top of Flyline gets me ~90% of what I miss: fish-like grey-text suggestions as I type, a real popup with fuzzy narrowing instead of dumb =Tab= cycling, and zero Emacs unlearning. Bash stays Bash - just with modern manners.
+* TODO Variable-Pitch Org: Keeping Tables and Code in Monospace :emacs:org:2026:
 :PROPERTIES:
-:EXPORT_FILE_NAME: 20260812120000-emacs--Whole-Document-Filling-in-Org
+:EXPORT_FILE_NAME: 20260924141600-emacs--Variable-Pitch-Org-Keeping-Tables-and-Code-in-Monospace
 :EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-08-12 12:00>
+:EXPORT_HUGO_LASTMOD: <2026-09-24 Thu 14:16>
 :END:
 
-I often find myself wanting to consolidate a document's paragraphs onto single lines — set the fill column to 999 and flatten everything. The tedious way is stepping through each paragraph and running =M-q= over and over. I wanted a single command that fills the /whole/ document in one keystroke, and ideally one that leaves my source code blocks alone.
+I love the idea of writing prose in a proportional font — headings and paragraphs simply look better — but every time I reached for =variable-pitch-mode= in Org I backed out within a minute. The table grid collapsed, source blocks went proportional and the indentation stopped lining up, and I was left choosing between "looks nice" and "works". The answer is that you do not have to choose: let Org keep monospace for the parts that need a grid, and variable pitch for everything else.
+
+A handful of buffer-local face remaps is all it takes.
+
 #+hugo: more
 
-The problem with the built-ins is that none of them quite do this:
-- =M-q= (=fill-paragraph=) fills /one/ paragraph at a time.
-- =fill-region= fills every paragraph in a region, but it is org-unaware — it will happily mangle your source blocks.
-- =fill-individual-paragraphs= treats each change of indentation as a new paragraph and keeps that indentation, which is exactly the semantics I wanted, but it also needs a region and has no idea what a =#+begin_src= block is.
+** What variable-pitch-mode actually does
 
-Here's a surprising discovery I made while testing: even =M-q= /inside/ a source block will join the wrapped lines within that block. There is no built-in that both fills a whole document and skips literal blocks. So I wrote one:
+=M-x variable-pitch-mode= is an interface to =buffer-face-mode=: it adds a buffer-local relative remap of the =default= face to the =variable-pitch= face. Anything that does not name a font family of its own — which is most Org faces — inherits it, so prose, headings, drawers and links render in the variable font. Tables and code inherit it too, which is the whole problem: an Org table aligns its columns with spaces, and spaces are only uniform in a fixed-width font. The same goes for the indentation inside a =#+begin_src= block.
+
+** The fix: pin the structural faces to fixed-pitch
+
+Org already distinguishes the structural faces from the prose, so all that is needed is to make those faces inherit =fixed-pitch=:
+
 #+begin_src elisp
-(defun my/fill-org-protected-blocks ()
-  "Return (BEG . END) pairs of literal blocks in the current Org buffer.
-Includes src, example, export, verbatim, comment and fixed-width
-blocks — content that must never be touched by filling."
-  (let (regions)
-    (org-element-map (org-element-parse-buffer)
-        '(src-block example-block export-block verbatim-block
-                    comment-block fixed-width)
-      (lambda (el)
-        (push (cons (org-element-property :begin el)
-                    (org-element-property :end el))
-              regions)))
-    (sort regions (lambda (a b) (< (car a) (car b))))))
-
-(defun my/fill-org-protected-p (pos blocks)
-  "Return non-nil if POS lies within one of BLOCKS ((BEG . END) ...)."
-  (catch 'found
-    (dolist (b blocks)
-      (when (and (>= pos (car b)) (< pos (cdr b)))
-        (throw 'found t)))))
-
-(defun my/fill-org-paragraphs ()
-  "Fill every Org paragraph element, leaving literal blocks alone.
-Paragraph elements include list items, so wrapped item text is
-joined while the items themselves stay separate.  Fills from the
-end of the buffer backwards so earlier element positions remain
-valid as lines get joined."
-  (let ((blocks (my/fill-org-protected-blocks))
-        (paras (org-element-map (org-element-parse-buffer) 'paragraph
-                (lambda (el)
-                  (cons (org-element-property :begin el)
-                        (org-element-property :end el))))))
-    (dolist (p (nreverse paras))
-      (unless (my/fill-org-protected-p (car p) blocks)
-        (fill-region-as-paragraph (car p) (cdr p))))))
-
-(defun my/fill-individual-paragraphs-buffer ()
-  "Fill every paragraph in the buffer at the current `fill-column'.
-In Org buffers, literal blocks (src, example, export, verbatim,
-comment, fixed-width) are left untouched and list items are filled
-as their own paragraphs; elsewhere the whole buffer is filled.
-Set `fill-column' (e.g. to 999 to collapse each paragraph to one line),
-then run this to fill the whole document in one keystroke."
-  (interactive)
-  (save-excursion
-    (save-restriction
-      (widen)
-      (if (derived-mode-p 'org-mode)
-          (my/fill-org-paragraphs)
-        (fill-individual-paragraphs (point-min) (point-max))))))
-
-(define-key my-overrides-mode-map (kbd "C-x M-q")
-            #'my/fill-individual-paragraphs-buffer)
+(defun my/org-fixed-pitch ()
+  "Keep org tables and code in fixed-pitch when `variable-pitch-mode' is on.
+Adds buffer-local relative remaps so the `org-table', `org-block',
+`org-block-begin-line', `org-block-end-line', `org-code' and
+`org-inline-src-block' faces inherit the `fixed-pitch' face.  With
+`variable-pitch-mode' off this is visually a no-op (the default face is
+monospace anyway); with it on, tables and source blocks keep their
+alignment while headings and prose render in the variable font."
+  (when (derived-mode-p 'org-mode)
+    (dolist (face '(org-table
+                    org-block
+                    org-block-begin-line
+                    org-block-end-line
+                    org-code
+                    org-inline-src-block))
+      (face-remap-add-relative face :inherit 'fixed-pitch))))
+(add-hook 'org-mode-hook #'my/org-fixed-pitch)
 #+end_src
 
-The approach is simple: parse the buffer with =org-element=, take every =paragraph= element — which includes list items, so an item's wrapped continuation lines count as one paragraph — and fill each with =fill-region-as-paragraph=, skipping any that fall inside a literal block (=src=, =example=, =export=, =verbatim=, =comment= and fixed-width lines). Filling happens from the end of the buffer backwards so the positions of earlier elements stay valid as lines get joined. In non-Org buffers it just fills the whole buffer with =fill-individual-paragraphs= as before.
-Usage is exactly what I wanted:
-1. Set the fill column: =M-: (setq fill-column 999)= (or =M-x set-fill-column=).
-2. =C-x M-q= — the whole document collapses, source blocks untouched, list items joined within themselves.
+The faces, and why each one is on the list:
 
-I verified it byte-for-byte against a test file full of deliberately wrapped =elisp=, =bash=, =python= and =text= blocks and wrapped bullet / numbered lists — every paragraph and item joined, every block line preserved. One gotcha I hit along the way: =#+begin_verbatim= is /not/ a real Org block type (Org parses it as a special block), so it won't be protected — stick with the block types above.
+- =org-table= — the table grid itself.
+- =org-block= — the contents of source, example and other literal blocks.
+- =org-block-begin-line= and =org-block-end-line= — the =#+begin_src= / =#+end_src= delimiter lines.
+- =org-code= — inline =~code~=.
+- =org-inline-src-block= — inline =src_emacs-lisp{...}=.
+
+** Why face-remap-add-relative is the right tool
+
+=face-remap-add-relative= adds a /relative/ remap: the face keeps its own definition and just gains the family from =fixed-pitch=. I do not have to restate the theme's colours, and switching theme does not undo it. It is also buffer-local, so nothing leaks into other buffers, and because the remap is always in place, toggling =variable-pitch-mode= on and off at any time just works. With variable pitch off it is a no-op: =fixed-pitch= and the default face use the same monospace family anyway.
+
+Two details I noticed while testing:
+
+- Remaps follow face inheritance. =org-table-row= and =org-table-header= pick up the table remap for free, =org-block-end-line= follows =org-block-begin-line=, and =org-inline-src-block= follows =org-block=. The explicit list above is partly documentation; a redundant entry costs nothing.
+- Syntax highlighting survives. Inside a natively fontified source block the tokens get =font-lock-*= faces on top of =org-block=, but the standard font-lock faces set colours and weights, not families. Face attributes merge, the family comes from =org-block=, and the code stays monospace while the keywords stay coloured.
+
+** Tuning it
+
+Two knobs worth knowing:
+
+- =M-x customize-face= on =fixed-pitch= and =variable-pitch= lets you pick the actual fonts; mine are =Monospace= and =Sans=.
+- If you want the verbatim face (=...=) monospace as well, add =org-verbatim= to the list. I leave it in the variable font because I use it for prose-ish literal words rather than code.
+
+** How to check it worked
+
+Put point on a table row or inside a source block and evaluate:
+
+#+begin_src elisp
+(font-at (point))
+#+end_src
+
+That returns the font the display engine actually chose at that position; compare it with the same call on a prose paragraph. One gotcha: =face-attribute= ignores =face-remapping-alist=, so it reports the original face and makes it look like the remap did nothing. =font-at= after a redisplay tells you the truth.
+
+I have =C-z p= bound to =variable-pitch-mode=, and now it is actually usable: Org reads like a document, and the parts that need a grid keep their grid.
+* TODO Git Worktrees Across the Windows/Linux Divide: The vc string-trim-right Trap :emacs:vc:git:worktree:2026:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260911113000-emacs--Git-Worktrees-Across-the-Windows-Linux-Divide
+:EXPORT_HUGO_SECTION: emacs
+:EXPORT_HUGO_LASTMOD: <2026-09-11 Fri 11:30>
+:END:
+
+Yes back to git worktrees again!, so, fresh from the worktree rabbit hole, I did something entirely reasonable: created a new worktree from VSCode on Windows, parked it in a shared folder, and opened the same directory from Emacs in a VM. Isn't this the whole point of the shared folder?. Emacs was not impressed. =C-x v d= in the new tree in the VM died with the gloriously unhelpful =string-trim-right: Wrong type argument: stringp, nil= - no file, no function, no mention of git, just a wrong-type error from a string function I had never knowingly called. Two hours later I had the story, and it was not the one I expected.
+
+#+hugo: more
+
+Ownership is the obvious place to look. On my laptop, a NAS export mounted over NFS shows the files as owned by the NAS's uid rather than mine, so every git command dies with =fatal: detected dubious ownership in repository=, and Emacs surfaces exactly the trim error above. The fix there was:
+
+#+begin_src sh
+  git config --global --add safe.directory '/home/jdyer/nas/*'
+#+end_src
+
+Cheap to check, so check it: =git config --get-all safe.directory= and run plain =git status= inside the worktree. But on the shared folder git was failing for a completely different reason.
+
+#+begin_src sh
+  $ git worktree list
+  fatal: not a git repository: /mnt/hgfs/SharedVM/SandBox-route-waypoint-draft/C:/DDrive/SharedVM/SandBox/.git/worktrees/SandBox-route-waypoint-draft
+#+end_src
+
+Look at that path. A Linux directory with a Windows absolute path welded onto the end. A linked worktree does not have a =.git= directory; it has a =.git= /file/ containing a single line, =gitdir: <path to the real git dir>=. VSCode on Windows wrote its own path:
+
+#+begin_src sh
+  $ cat .git
+  gitdir: C:/DDrive/SharedVM/SandBox/.git/worktrees/SandBox-route-waypoint-draft
+#+end_src
+
+On Linux =C:/...= does not start with a slash, so git treats it as relative and staples it to the worktree directory - hence the mangled path. Nothing is corrupted; the pointer is simply written in a dialect the other OS cannot parse. There is no per-OS path mapping in a worktree pointer, and no amount of permissions fiddling will help.
+
+The Emacs error is downstream, and once you see the call chain it stops being mysterious. =vc-git--git-path= in =vc-git.el= does this:
+
+#+begin_src emacs-lisp
+  (defun vc-git--git-path (&optional path)
+    ...
+    (concat (string-trim-right
+             (vc-git--run-command-string nil "rev-parse" "--git-dir"))
+            "/"))
+#+end_src
+
+=vc-git--run-command-string= returns =nil= whenever its git invocation fails, and =string-trim-right= duly objects. =vc-dir= calls this early, so the buffer never even gets a chance to render. You can reproduce the diagnosis without touching vc-dir, and =M-x toggle-debug-on-error= will hand you the backtrace:
+
+#+begin_src emacs-lisp
+  (let ((default-directory "/mnt/hgfs/SharedVM/SandBox-route-waypoint-draft/"))
+    (vc-git--git-path nil))
+  ;; => (wrong-type-argument stringp nil)
+#+end_src
+
+The lesson for reading vc errors: a wrong-type error naming an internal helper almost always means git failed and vc-git assumed success. Run the git command by hand first.
+
+If only the VM needs the worktree, repair it from the /main/ worktree (you cannot run repair from inside the broken tree - git cannot find it in the first place):
+
+#+begin_src sh
+  git -C /mnt/hgfs/SharedVM/SandBox worktree repair /mnt/hgfs/SharedVM/SandBox-route-waypoint-draft
+#+end_src
+
+That rewrites both the =.git= file and the back-pointer in =.git/worktrees/<name>/gitdir=, even when both currently hold Windows paths. It works, but it is a one-OS fix: VSCode will be broken next time.
+
+If you want both sides to work without thought, use relative pointers, since the two trees are siblings in both namespaces:
+
+#+begin_src sh
+  # SandBox-route-waypoint-draft/.git
+  gitdir: ../SandBox/.git/worktrees/SandBox-route-waypoint-draft
+
+  # SandBox/.git/worktrees/SandBox-route-waypoint-draft/gitdir
+  ../../../../SandBox-route-waypoint-draft/.git
+#+end_src
+
+I verified both forms resolve correctly from either OS and that =git worktree list= still finds the tree. Set it once and forget it.
+
+Finally, if the shared folder also exposes odd ownership, add the safety valve, scoped to the share:
+
+#+begin_src sh
+  git config --global --add safe.directory '/mnt/hgfs/SharedVM/*'
+#+end_src
+
+- =git worktree repair=, =git worktree move= and friends rewrite these pointers to absolute paths for the machine running them, so a repair on one side re-breaks the other. Amusingly, Emacs 31's new =vc-move-working-tree= runs =worktree repair= under the hood, so if you use it on a shared tree it will do exactly that.
+- While the pointers face the other OS, /everything/ on this side fails, not just =vc-dir=: Magit, shell prompts, file watchers, and VSCode's git extension on the other side. It is not a toggle you can flip only when you need it; some background process will trip over it first.
+- If you edit and commit from both OSes regularly, linked worktrees across the boundary are the wrong tool; separate clones are duller but they do not care which side of the share is asking.
+
+The deeper point is small and worth remembering: a worktree's =.git= file is a single fixed pointer with no notion of who is reading it. Emacs is only the messenger - =string-trim-right= got handed a =nil= because git had already given up.
 * TODO vc-to-push-to-github-using-ssh :vc:github:emacs:ssh:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20241217112011-emacs--vc-to-push-to-github-using-ssh
@@ -298,73 +422,87 @@ SSH_ASKPASS_REQUIRE=prefer
 :EXPORT_HUGO_LASTMOD: <2026-07-23 10:57>
 :EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260723105738-emacs--Converting-Excel-Data-to-an-Org-Table-in-Emacs.jpg
 :END:
-One of the strengths of Emacs and Org mode is the ability to work with
-structured data directly inside your notes and documentation. If you've received data in Microsoft Excel or LibreOffice Calc and want to bring it into Org mode as an Org table, the process is surprisingly simple.
+One of the strengths of Emacs and Org mode is the ability to work with structured data directly inside your notes and documentation. If you've received data in Microsoft Excel or LibreOffice Calc and want to bring it into Org mode as an Org table, the process is surprisingly simple.
+
 This article describes a straightforward workflow:
+
 1. Open the spreadsheet in LibreOffice Calc (or Excel).
 2. Export or copy the data as tab-separated text.
 3. Use =org-table-import= with a TAB separator.
 4. Work with the resulting Org table.
 
-This approach works particularly well for review comments, requirements, test results, and other tabular data.
-CSV files are convenient, but they can become problematic when fields contain:
+This approach works particularly well for review comments, requirements, test results, and other tabular data.  CSV files are convenient, but they can become problematic when fields contain:
+
 - Commas
 - Quotes
 - Embedded line breaks
 
 Spreadsheet applications internally understand these complexities, but simple text processing tools may not.
-When copying data directly from LibreOffice Calc, fields are usually separated by TAB characters. Org mode can import TAB-separated data very reliably, making it an excellent intermediary format.
-Open the spreadsheet in LibreOffice Calc.
-For example:
+
+When copying data directly from LibreOffice Calc, fields are usually separated by TAB characters. Org mode can import TAB-separated data very reliably, making it an excellent intermediary format.  Open the spreadsheet in LibreOffice Calc.  For example:
+
 #+begin_example
 comments.xlsx
 #+end_example
 
 The spreadsheet might contain columns such as:
+
 #+begin_example
 Comment ID | Item | Location | Comment
 #+end_example
 
 Verify that the data appears correctly in the spreadsheet before continuing.
+
 Select the cells you wish to import.
+
 #+begin_example
 Ctrl+A
 Ctrl+C
 #+end_example
 
 Create a temporary text file and paste the contents.
+
 For example:
+
 #+begin_example
 comments.tsv
 #+end_example
 
 Although the file may have a =.txt= extension, the content is actually TAB-separated.
+
 You can confirm this by opening the file in Emacs and enabling:
+
 #+begin_src emacs-lisp
 M-x whitespace-mode
 #+end_src
 
 TAB characters will become visible.
+
 Open a new Org file:
 #+begin_example
 C-x C-f comments.org
 #+end_example
 
 Move to the location where you want the table to appear.
+
 Run:
 #+begin_example
 C-u C-u M-x org-table-import
 #+end_example
 
 The double universal argument (=C-u C-u=) supplies the value =16=, which tells =org-table-import= to use TAB characters as field separators.
+
 You will be prompted for a filename:
 #+begin_example
 Import file:
 #+end_example
 
 Select your tab-separated file.
+
 Org mode converts the contents into an Org table automatically.
+
 The documentation for =org-table-import= explains several separator options.
+
 Relevant values include:
 #+begin_example
 4   -> comma separated (CSV)
@@ -383,7 +521,9 @@ Emacs passes the value:
 #+end_example
 
 to the command, indicating that TAB should be used as the delimiter.
+
 Suppose the source file contains:
+
 #+begin_example
 
 Comment ID    Item              Location    Comment
@@ -412,13 +552,16 @@ M-x org-table-align
 #+end_example
 
 Org will reformat the table neatly.
+
 If the data is already pasted into an Org buffer, importing from a file is not necessary.
+
 Select the region containing the tab-separated text and run:
 #+begin_example
 C-u C-u M-x org-table-convert-region
 #+end_example
 
 The selected text will be converted directly into an Org table.
+
 Multiline spreadsheet cells deserve special attention.
 For example:
 #+begin_example
@@ -428,10 +571,9 @@ Line 3
 #+end_example
 
 stored inside a single spreadsheet cell may not convert cleanly into a single Org table cell.
-For datasets containing large review comments or requirements with embedded paragraphs, consider converting rows into Org headings instead of maintaining everything in one large table.
-For example:
-Using =org-table-import= with a double universal argument is a quick and reliable way to move spreadsheet data into Org mode.
-The complete workflow is:
+
+For datasets containing large review comments or requirements with embedded paragraphs, consider converting rows into Org headings instead of maintaining everything in one large table.  For example: Using =org-table-import= with a double universal argument is a quick and reliable way to move spreadsheet data into Org mode.  The complete workflow is:
+
 #+begin_example
 LibreOffice Calc
     ↓
@@ -484,40 +626,6 @@ Now =M-c= does the right thing in both worlds:
 - Inside isearch → grabs the current search string and runs =occur= with it, respecting your global case-fold setting.
 
 One key, two contexts, zero surprise.
-* TODO Emacs: Global Keybinding Overrides for Consistent Shortcuts :emacs:config:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 202 la60717000000-emacs--Global-Keybinding-Overrides-for-Consistent-Shortcuts
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-07-17 12:00>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260717000000-emacs--Global-Keybinding-Overrides-for-Consistent-Shortcuts.jpg
-:END:
-
-I've recently shifted my core keybindings from =global-set-key= to a custom global minor mode. At first, it seems like a redundant step—why create a mode and a map when a simple function call does the trick? The answer lies in the Emacs keybinding lookup hierarchy.
-When you press a key, Emacs searches for the binding in this specific order:
-1. Local Keymaps (buffer-specific)
-2. Minor Mode Maps (in reverse order of activation)
-3. Major Mode Map (the specific mode of the buffer, e.g., =org-mode= or =magit-mode=)
-4. Global Map (the fallback, where =global-set-key= lives)
-
-The critical part is that the Global Map is the *last* place Emacs looks. If a major mode defines a binding for a key you've set globally, the major mode "wins" and your global binding is shadowed. This is why you often find yourself having to manually unset keys in specific modes just to get your favorite shortcuts back.
-By implementing a Global Minor Mode, you move your bindings into the Minor Mode layer. Because Emacs checks minor modes *before* it checks the major mode, your override map takes precedence.
-This means you can define a set of "sacred" keys—navigation, window management, or core utility functions—that will work exactly the same way regardless of whether you are in a complex IDE-like mode or a plain text file. No more fighting with package defaults or writing endless =define-key= calls to clear out mode-specific conflicts.
-Here is the pattern:
-#+begin_src elisp
-(defvar my-overrides-mode-map (make-sparse-keymap)
-  "Keymap for the `my-overrides-mode'.")
-
-(define-minor-mode my-overrides-mode
-  "Activate the `my-overrides-mode-map'."
-  :global t
-  :init-value nil
-  :keymap my-overrides-mode-map)
-
-(my-overrides-mode 1)
-
-;; Now use define-key on the map instead of global-set-key
-(define-key my-overrides-mode-map (kbd "M-o") #'bookmark-jump)
-#+end_src
 * TODO Built-in VC tweaks: making SPC in vc-dir do the right thing :vc_mode:vc:emacs:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260613082846-emacs--Built-in-VC-tweaks--making-SPC-in-vc-dir-do-the-right-thing
@@ -648,192 +756,6 @@ Sick          black on #ffd9a8 (orange)
 Because both colours are pinned to a light island, it reads the same whether I am in a light theme or a dark one, which was the whole point.  As a happy side effect, passing a real symbol also sidesteps an error =hi-lock= would otherwise throw if you re-evaluate the same pattern, since its de-duplication path calls =face-name= on the face, which, you guessed it, also chokes on an anonymous plist.
 None of this is a package, it is just a plain text file per year and a handful of org-mode features doing quiet work, but that is sort of the point, the table is the thing I edit, and org handles the numbering, the running leave balance, the folding and the colour without me ever leaving the buffer.  Ten years of these now, all readable, all greppable, and all sitting in version control.
 Next on the list is probably teaching it to auto-fill the Monday dates for a fresh year, I already have a =$3= date formula doing that for 2026, generated from the first Monday, so really I just need to roll it back through the archive, future me can sort that out!
-* TODO ztree-A-Tighter-Cleaner-Directory-Tree-for-Emacs :emacs:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20260520081346-emacs--ztree-A-Tighter-Cleaner-Directory-Tree-for-Emacs
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-05-20 08:13>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260520081346-emacs--ztree-A-Tighter-Cleaner-Directory-Tree-for-Emacs.jpg
-:END:
-I have been spending a lot of time in ztree lately, running side-by-side directory diffs on deeply nested Java projects, and honestly the default display was starting to wear on me.
-ztree, if you haven't used it, is a text-mode directory tree and diff tool for Emacs, and it works beautifully for what it does. Two commands, =M-x ztree-dir= for browsing a single tree, and =M-x ztree-diff= for comparing two directories side by side. It is my go-to for understanding what changed between two versions of a codebase, which is something I find myself doing a lot.
-But the default indentation at 4 spaces per tree level, and the old ASCII-only connectors, meant that a 12-level deep hierarchy would chew through half the window before you even got to a filename. And in the side-by-side diff view, deep files would just wrap onto the next line, making an absolute mess of things.
-So, naturally, I started hacking.
-#+hugo: more
-
-The original code had the indentation step hardcoded to 4. Every level of depth cost you 4 columns before you saw anything useful. With a 12-level deep path inside a =ztree-diff= buffer, the filename would start at column 48 on the left panel and then there would barely be room on the right panel for the corresponding filename before the window edge.
-So the first thing I did was extract that constant into a proper =defcustom=:
-#+begin_src elisp
-(defcustom ztree-indent-step 2
-  "Indentation step per tree depth level, in columns.
-Affects how deeply nested directories are indented in the tree view.
-Smaller values (e.g. 2) are better for side-by-side split windows.
-Minimum value is 2."
-  :type 'integer
-  :group 'Ztree)
-#+end_src
-
-I settled on 2 as the default. At 12 levels deep, that is 24 columns instead of 48. It makes a dramatic difference in the diff view, everything fits on one line now.
-But of course changing the indent broke things.
-The tree connector characters (the vertical lines, corners, and dashes that draw the hierarchy) were all positioned based on that magic number 4. There is a function called =ztree-draw-tree= that scrolls through the buffer placing ─ and │ and ├ and └ characters at specific column positions calculated from the indentation step. And there is =ztree-insert-single-entry= that writes the actual filenames.
-When I reduced the indent to 2, the tree dashes started overwriting the first character of every filename. This is because the horizontal line drawn by the tree was one character too long, calculated at =step + 1= dashes instead of just =step= dashes. At step=4, that extra dash landed on alignment padding, so nobody noticed. At step=2, it landed on the very first letter of the filename. So =RtiAdapter.java= became =tiAdapter.java= which was, understandably, not ideal.
-The fix in the end was simple once I traced through the column arithmetic. The horizontal line needed to be =step= characters long, not =step + 1=:
-#+begin_src elisp
-(line-end-leaf (+ (+ 2 ztree-indent-step) offset))
-#+end_src
-
-This one-character change means the last dash stops one column before the filename starts. At step=2, the gap is 1 column. At step=3, gap of 2. At step=4, gap of 3. Everything with some breathing room.
-The original ztree could draw in ASCII or Unicode, controlled by a variable called =ztree-draw-unicode-lines= that defaulted to =nil=. I have no idea why you would choose ASCII for a tree display in 2026, so I switched the default to =t=:
-#+begin_src elisp
-(defcustom ztree-draw-unicode-lines t
-  :type 'boolean
-  :group 'Ztree)
-#+end_src
-
-Instead of pipes and dashes you get the proper box-drawing characters:
-#+begin_example
-Old (ASCII):
-[-]project
- |--[-]src
- |  `--main.el
- `--readme.md
-
-New (Unicode):
-[-]project
- ├──[-]src
- │  └──main.el
- └──readme.md
-#+end_example
-
-It is much cleaner. The ├ and └ characters already have the horizontal stroke built into the glyph, so the junction where a vertical line meets a horizontal one looks like a single character rather than a rendering artifact.
-The old ztree used a =[+]= or =[-]= text indicator for expandable directories, written into the buffer as part of the text insertion. Then the tree drawing would overwrite the middle character of that three-character sign with the tree connector, leaving the closing =]= hanging there with nothing to hang on to:
-#+begin_example
-├──]subdir
-└──]file.txt
-#+end_example
-
-That =]= has been bugging me for ages, honestly. It is a leftover from the original bracket syntax, and it adds nothing.
-I tried a couple of approaches. First I removed just the =]= from the sign to make it =[+=, but then the tree drawing's two dashes consumed the entire two-character sign, leaving no visual indication that a directory was expandable at all.
-The better solution was to remove the text-based sign entirely and instead embed the expand/collapse indicator directly into the tree drawing itself. The logic now: for leaf (file) nodes, draw ─ as the final horizontal line character. For directory nodes, draw an =X= if it is collapsed (can be expanded) or a =-= if it is expanded (can be collapsed):
-#+begin_src elisp
-(if (listp child)
-    (let* ((node (gethash row ztree-line-to-node-table))
-           (expanded (and node (ztree-is-expanded-node node)))
-           (sign-char (if expanded ?\- ?X)))
-      (if (< line-start end)
-          (ztree-draw-horizontal-line line-start (1- end) row))
-      (ztree-draw-char sign-char end row))
-  (ztree-draw-horizontal-line line-start end row))
-#+end_src
-
-The result is much cleaner:
-#+begin_example
-  x
-  ├-sub
-  │ ├Xdeep
-  │ └─other.txt
-  └─root.txt
-#+end_example
-
-The =X= is deliberately capital, stands out nicely against the surrounding box-drawing characters, and makes it immediately obvious which directories you can expand. The =-= on expanded directories is less prominent, which feels right.
-One more thing that bothered me was how the tree connectors sat flush against the parent node's text. In the original layout, the =├= or =└= was drawn immediately after the parent's indent, with no visual gap. I shifted all the connector positions one column to the right:
-#+begin_src elisp
-(x-offset (+ 3 offset))      ;; was (+ 2 offset)
-(line-start (+ 4 offset))    ;; was (+ 3 offset)
-#+end_src
-
-This gives a consistent one-column gap between the vertical tree line and the intersection or corner characters, making it much easier to follow the hierarchy visually:
-#+begin_example
-Before:
-├─sub
-│└─deeper
-
-After:
-  ├-sub
-  │ └Xdeeper
-#+end_example
-
-Here is a summary of the customisation options now available:
-- =ztree-indent-step= (default 2) -- columns per depth level
-- =ztree-draw-unicode-lines= (default t) -- box-drawing vs ASCII
-- All changeable via =M-x customize-variable=
-
-And the tree drawing itself now uses embedded =X= and =-= indicators instead of bracket-based text signs, with properly calculated horizontal line lengths that never eat into filenames.
-If you use ztree already, just pull the latest and the new defaults should apply. You can customise to your taste:
-#+begin_src elisp
-(use-package ztree
-  :config
-  (setq ztree-indent-step 2)
-  (setq ztree-draw-unicode-lines t))
-#+end_src
-
-The package is on MELPA as =ztree=, and the source is at [[https://codeberg.org/fourier/ztree][codeberg.org/fourier/ztree]].
-Next up is probably looking at the file comparison backend, I have been wondering if swapping =diff= for something smarter would speed up those large project comparisons, but that is a question for another day!
-* TODO ztree-Bug-When-Filtered-Files-Slip-Through-in-Subdirectories :emacs:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20260519133033-emacs--ztree-Bug-When-Filtered-Files-Slip-Through-in-Subdirectories
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-05-19 13:30>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260519133033-emacs--ztree-Bug-When-Filtered-Files-Slip-Through-in-Subdirectories.jpg
-:END:
-
-I was comparing two directories with ztree-diff the other day, comparing some downloads, and I noticed something odd.  I had my filter list set up to ignore =*.class= files and it worked fine for files at the top level but not for files in subdirectories.  Specifically, a =./gradle-...jar_001.class= at the root was correctly hidden but =./tmp/gradle-...jar.class= in a subdirectory was not.  Strange, I thought, let me dig in.
-#+hugo: more
-
-I use =ztree-diff-filter-list= extensively, it is a variable you set with a list of regex patterns against which the short name (basename) of each file is checked.  My config looks something like this:
-#+begin_src elisp
-(setq-default ztree-diff-filter-list
-              '("\.class"
-                "build" "\.dll" "\.iso" "\.git"
-                "^elpa$" "bin" "obj"))
-#+end_src
-
-So the filter uses =string-match= against the basename of the node, which means =\.class= should match any =*.class= file regardless of depth.  And it did, but only at the top level.  That got my attention -- same regex, same function, different behaviour depending on directory depth.  So I started tracing through the ztree source code.
-Ztree-diff has two ways of building the tree model.  The main one, in =ztree-diff-node-recreate=, iterates over every file in both directories, creates a node for each, then calls =(ztree-diff-model-should-ignore child)= to check the filter.  This path works fine.
-Then there is the orphan path.  When a directory exists only on one side (a right-orphan like =tmp/= in my case), ztree calls =ztree-diff-model-subtree= to recursively populate all its children.  And that function?  It never called =ztree-diff-model-should-ignore= at all.  It just created every child node with whatever status was passed in, with no filter check whatsoever.
-Here is the original code, at =ztree-diff-model.el= line 197:
-#+begin_src elisp
-(defun ztree-diff-model-subtree (parent path side diff)
-  "Create a subtree with given PARENT for the given PATH."
-  (let ((files (ztree-directory-files path))
-        (result nil))
-    (dolist (file files)
-      (if (file-directory-p file)
-          (let* ((node (ztree-diff-node-create parent ... diff))
-                 (children (ztree-diff-model-subtree node file side diff)))
-            (setf (ztree-diff-node-children node) children)
-            (push node result))
-        (push (ztree-diff-node-create parent ... diff)
-              result)))
-    result))
-#+end_src
-
-Notice the filter check is conspicuously absent?  The main loop in =ztree-diff-node-recreate= had it, this function simply did not.  So any file that lived inside an orphan-only directory -- one that existed on just the left or just the right side -- was invisible to the filter list.
-The fix turned out to be two lines, one in each branch of that =dolist=, to call =ztree-diff-model-should-ignore= after creating each node:
-#+begin_src elisp
-(defun ztree-diff-model-subtree (parent path side diff)
-  "Create a subtree with given PARENT for the given PATH."
-  (let ((files (ztree-directory-files path))
-        (result nil))
-    (dolist (file files)
-      (if (file-directory-p file)
-          (let* ((node (ztree-diff-node-create parent ... diff))
-                 (children (ztree-diff-model-subtree node file side diff)))
-            (setf (ztree-diff-node-children node) children)
-            (when (ztree-diff-model-should-ignore node)
-              (setf (ztree-diff-node-different node) 'ignore))
-            (push node result))
-        (let ((node (ztree-diff-node-create parent ... diff)))
-          (when (ztree-diff-model-should-ignore node)
-            (setf (ztree-diff-node-different node) 'ignore))
-          (push node result))))
-    result))
-#+end_src
-
-And because the recursion already goes depth-first (children are created before the parent's ignore status is propagated), the check at each level catches filtered files regardless of how deep they are.
-If you have ztree installed via MELPA, the fix is a local patch until the upstream merges it (which it hopefully will, it is a small and obvious change).  You can edit =ztree-diff-model.el= in your elpa directory directly, or wait for the next release.
-After patching, press =g= in any ztree-diff buffer to run =ztree-diff-full-rescan= and rebuild the model -- no restart needed.
-The repository is at [[https://github.com/fourier/ztree][https://github.com/fourier/ztree]] and it is a package I keep coming back to for directory comparison work.  It is one of those tools that just does its job well once you get past the occasional wart like this.
 * TODO Emacs Mu4e 1.14 Setting Up Email In Emacs! :emacs:mu4e:email:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260513-blog--mu4e-setup
@@ -1249,81 +1171,6 @@ I remap the built-in rather than overriding the key directly:
 This means =Z= still does what it always did conceptually, just better, and any package that references =dired-do-compress= symbolically will pick up the new behaviour automatically.
 To be clear, the built-in =dired-do-compress= is perfectly functional, if gzip is all you need then you are already sorted, the improvement here is purely about having choices and a smoother workflow, the transient gives you seven formats at your fingertips without leaving dired, the async execution means you can keep working while large files compress, and now the automatic decompression means =Z= is a single-keypress for the most common operation, decompress, which is what I find myself doing most often.
 Future me might add zip support or configurable compression levels via the transient, but for now this covers everything I need!
-* TODO Exporting-Org-TODO-States-With-Colour :emacs:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20260505111328-emacs--Exporting-Org-TODO-States-With-Colour
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-05-05 11:13>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260505111328-emacs--Exporting-Org-TODO-States-With-Colour.jpg
-:END:
-
-So, I organise pretty much everything in org-mode, tasks, projects, shopping lists, you name it, and naturally I have my own set of todo keywords set up just the way I like them, TODO, DOING, ORDR, SENT on the active side, and DONE and CANCELLED on the done side, each with its own colour so I can scan a file at a glance and know what state things are in.  But the moment I need to get that information *out* of Emacs and into something like Jira, or Confluence, or even just a shared HTML page, the whole thing falls apart.  The colours vanish, the states either get stripped entirely or turn into plain text, and nobody else can see what I see.  I spent a surprisingly long time trying to fix this, so I thought I would write it up.
-#+hugo: more
-
-My first thought was, well, if the colours do not survive export, I will just bake them in, so I tried putting emojis directly into the =org-todo-keywords= definition:
-#+begin_src elisp
-(setq org-todo-keywords
-      '((sequence "📋 TODO(t)" "🔄 DOING(g)" "📝 ORDR(o)" "📤 SENT(s)" "|" "✅ DONE(n)" "❌ CANCELLED(c)")))
-#+end_src
-
-And this works beautifully in the buffer, you get a nice emoji next to each state, and when you export to HTML the emojis are right there in the text, no CSS required.  Jira even picks them up because they are just Unicode.
-Except, Emacs immediately ground to a halt.  Blank screen, CPU spiking, the whole frozen disaster.  After a bit of head-scratching I realised what was happening, with =org-startup-indented= turned on, which I use everywhere, Emacs tries to calculate column widths for alignment, and emojis report inconsistent character widths depending on the font.  So the indentation code recalculates, gets a different answer, recalculates again, and never converges.  An infinite redisplay loop, lovely.
-So, emojis directly in the keyword strings are out, at least if you use =org-startup-indented=, which, let us be honest, most of us do.
-Right, so if I cannot put emojis *in* the keywords themselves, what if I inject them only at export time?  That way Emacs never has to lay them out in a buffer, but the HTML still gets them.  Org has a whole filter system for this, you can hook into the export pipeline and mangle the HTML output before it gets written to the file.
-My first try used =org-export-add-filter=, which seemed like the obvious API.  Except that function does not exist, at least not in the version of org I was running.  Emacs helpfully told me =Symbol's function definition is void: org-export-add-filter=, and then refused to load my entire config.  Not great.
-What actually works is adding a function to =org-export-filter-body-functions=, which is a simple list that org checks during export.  Here is what I ended up with:
-#+begin_src elisp
-(defconst my/org-todo-emoji-map
-  '(("TODO" . "📋")
-    ("DOING" . "🔄")
-    ("ORDR" . "📝")
-    ("SENT" . "📤")
-    ("DONE" . "✅")
-    ("CANCELLED" . "❌"))
-  "Mapping of TODO keywords to emoji prefixes for HTML export.")
-
-(defun my/org-export-prepend-todo-emoji (text _backend _info)
-  "Prepend emoji to TODO keywords in TEXT during HTML export."
-  (dolist (pair my/org-todo-emoji-map text)
-    (let ((keyword (car pair))
-          (emoji (cdr pair)))
-      (setq text (replace-regexp-in-string
-                  (format ">%s<" (regexp-quote keyword))
-                  (format ">%s %s<" emoji keyword)
-                  text t t)))))
-
-(add-to-list 'org-export-filter-body-functions
-             'my/org-export-prepend-todo-emoji)
-#+end_src
-
-The trick here is that org wraps each TODO keyword in an HTML span, so =TODO= becomes something like =<span class="todo TODO">TODO</span>=.  My filter looks for the pattern =>TODO<= (inside an HTML tag) and replaces it with =>📋 TODO<=, sticking the emoji right before the keyword text.  The =t t= arguments to =replace-regexp-in-string= make it case-sensitive and literal, so it only hits exact matches.
-And because this runs as an export filter, none of those emoji characters ever appear in the live buffer.  No redisplay loop, no CPU spike, Emacs loads fine.
-Now, the emoji approach is great for making states /visible/ in Jira and other tools that strip CSS, but what if you actually want coloured badges, not just coloured circle icons?  Org-mode already gives you the HTML hooks for this.  When it exports a TODO state, it wraps it like this:
-#+begin_example
-<span class="todo TODO">TODO</span>
-<span class="done DONE">DONE</span>
-#+end_example
-
-So you can target =.todo= for all active states, =.done= for all completed states, or the specific keyword class (like =.TODO=, =.DOING=) for individual colours.  Drop this into your org file:
-#+begin_src fundamental
-#+HTML_HEAD: <style>
-#+HTML_HEAD:   .todo { color: #d93025; font-weight: bold; }
-#+HTML_HEAD:   .DOING { color: #6e8baa; font-weight: bold; }
-#+HTML_HEAD:   .ORDR { color: #c96eee; font-weight: bold; }
-#+HTML_HEAD:   .SENT { color: #c86bee; font-weight: bold; }
-#+HTML_HEAD:   .done { color: #1e8e3e; font-weight: bold; }
-#+HTML_HEAD: </style>
-#+end_src
-
-The catch is that CSS colours will not survive a Markdown export or a copy-paste into Jira's visual editor, they only work in a browser viewing the raw HTML.  For Jira specifically, the emojis are far more reliable.
-One more thing that tripped me up.  By default, org exports =**= headings as =<h2>= tags, which means your task list looks like a page of headings, not a list.  If you want proper =<ul>/<li>= list items, you need the =H:1= option:
-#+begin_src fundamental
-#+OPTIONS: H:1
-#+end_src
-
-This tells org to promote everything below level 1 into list items, so your =**= tasks become nested =<li>= elements with proper bullet points.  Much better for importing into other tools.
-After all this experimenting, here is what I landed on.  Keep your =org-todo-keywords= plain, no emojis in the keyword strings, that way Emacs stays fast.  Add the export filter so emojis appear in HTML.  Use =H:1= for clean list output.  And when you need to get things into Jira, export as HTML with =C-c C-e C-b h H= (body only) and copy the result, the emojis come through because they are just Unicode, and the list structure survives because it is semantic HTML.
-If you are on Jira Cloud, copying and pasting the rendered HTML from a browser window also works surprisingly well for preserving structure.  And honestly, if Jira is the target, the emoji filter is the bit that matters most, because Jira will strip your CSS every time, but it cannot strip Unicode.
 * TODO A-VSCode-ish-Treemacs-Sidebar :emacs:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260421153000-emacs--A-VSCode-ish-Treemacs-Sidebar
@@ -1533,39 +1380,6 @@ install:
 
 With this setup, you can run =make install= to update your local archive whenever you make changes to your package.
 Would you like me to explain any specific aspect of this process in more detail?
-* TODO Teaching-Emacs-to-Follow-the-Sun :emacs:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20260420200000-emacs--Teaching-Emacs-to-Follow-the-Sun
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-04-20 20:00>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260420200000-emacs--Teaching-Emacs-to-Follow-the-Sun.jpg
-:END:
-
-I spent an afternoon on my Sway desktop wiring up a proper system-wide dark/light-mode toggle with [[https://darkman.whynothugo.nl/][darkman]], and one by one the applications fell into line, GTK apps via =gsettings=, Thunderbird via the xdg-desktop-portal =color-scheme= property, Alacritty via its live-reloading config import, all flipping together on a single =Super+F2=.  Everything looked lovely, except for one stubborn exception sitting right in the middle of my workspace quietly refusing to join in, my Emacs daemon, still in =doom-old-hope= regardless of what time of day it was.
-#+hugo: more
-
-Which, fine, is *entirely* fair on Emacs's part, nothing in the desktop-appearance signal world really knows about Emacs, =prefers-color-scheme= media queries are a browser concept, libadwaita does not run inside the Emacs process, and the =color-scheme= D-Bus property is essentially invisible to my init file.  So the question becomes, how do I get an *external* signal, "the system just went dark", to land inside my long-running Emacs server and pick a different theme?  And the answer, as it turns out, is beautifully boring, =emacsclient --eval=.
-The whole thing ended up being maybe ten lines of shell.  Darkman, sensibly, runs user scripts on every transition, it looks for them under =~/.local/share/darkman/= (and yes, that is =XDG_DATA_HOME=, not =XDG_CONFIG_HOME=, I lost a while figuring that out) and hands each script the new mode, =dark= or =light=, as =$1=.  All I needed was a script that turned that argument into an elisp form and pushed it through =emacsclient=:
-#+begin_src bash
-#!/bin/sh
-case "$1" in
-    dark)  THEME=doom-old-hope ;;
-    light) THEME=modus-operandi-tinted ;;
-    *) exit 0 ;;
-esac
-
-emacsclient --no-wait --eval "(progn
-    (mapc #'disable-theme custom-enabled-themes)
-    (load-theme '$THEME t))" >/dev/null 2>&1 || true
-#+end_src
-
-There are a couple of small but important bits in that =--eval= form worth pulling apart.  The first is =(mapc #'disable-theme custom-enabled-themes)=, which matters because =load-theme= is *additive*, it layers a new theme on top of whatever is already active rather than replacing it, and if you do not disable the old one first you end up with bizarre hybrid colour schemes where the new theme's =default= face wins but, say, =mode-line= is still inheriting from the old theme because the new theme happens not to override it.  So you always clear the decks before loading something new.  The second is the =t= at the end of =load-theme=, which is =NO-CONFIRM=, without it Emacs throws up its little "Loading a theme can run Lisp code. Really load?" safety prompt, which is sensible behaviour for interactive use but absolutely ruinous when the call is coming from a background process with no human at the wheel.
-The =--no-wait= flag stops =emacsclient= from blocking darkman's transition handler while it waits for the form to finish, and the trailing =|| true= with stderr swallowed means the whole thing silently no-ops if the Emacs server is not currently running, which keeps darkman from marking the script as failed.  Darkman's log is mercifully chatty about this, it reports =Found script=, =Running script=, =Script exited OK= for each hook, so the first time I ran it I could actually *see* my little =emacs.sh= being picked up and fired in order.
-Now, here is the bit that made me grin.  I have, as of a few days ago, that =my/sync-ui-accent-color= function wired into =enable-theme-functions= so that every call to =load-theme= triggers a cascade of accent-colour remapping across the mode-line, cursor, tab-bar, fringes, the whole UI chrome.  Which means that when darkman fires at sundown and my shell hook pushes a =load-theme= into the daemon, =enable-theme-functions= fires *inside Emacs*, my accent-sync runs, and the entire UI repaints in one beat, mode-line and tab-bar and cursor all shifting to the new palette in perfect sync with the theme itself.  Two totally independent pieces of machinery, the shell-side darkman hook and the elisp-side theme hook, meeting in the middle at a single =load-theme= call and doing exactly the right thing without me having to wire anything extra at all.  It is that composability thing again, the bits I built for one reason quietly turning out to be useful for another, just because the underlying
-hooks were designed right in the first place.
-The theme pair I settled on, by the way, is =doom-old-hope= for dark and =modus-operandi-tinted= for light.  =doom-old-hope= is a lovely warm cream-on-charcoal palette with Star-Wars-ish green and amber accents that I have had enabled for ages and have no intention of giving up, and =modus-operandi-tinted= is Prot's gorgeous soft-ivory light theme which I think pairs rather well with it, a calm neutral light mode that does not knock me over at eight in the morning.  But the beauty of the script is that the theme names are two lines at the top, you can swap them for any pair you like, =ef-day= / =ef-night=, =leuven= / =wombat=, or any of the dozens of doom themes without touching anything else in the setup.
-One thing I do want to tidy up eventually, =emacsclient= is a fine blunt instrument but it does mean the "which theme is currently active" decision lives in a shell script rather than in my elisp, which is slightly the wrong side of the fence for my tastes.  The cleaner long-term answer would be a tiny elisp minor mode that subscribes directly to darkman's D-Bus signal (=nl.whynothugo.darkman=) and picks the theme from inside Emacs itself, which would also let me do more sophisticated things like swap =fixed-pitch= faces or toggle =hl-line-mode= based on the mode.  That is a proper little Emacs-DIYer project for another day though, for now the shell hook does the job, and =Super+F2= now flips the whole desktop *including Emacs* in one satisfying whoomph.
-Next up, I might actually have a crack at that D-Bus listener, =dbus-register-signal= has been sitting in my "things I should really play with" list for ages and this feels like the perfect excuse to finally poke at it!
 * TODO Sudo-Using-It :emacs:2024:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20241130201425-emacs--Sudo-Using-It
@@ -1576,80 +1390,6 @@ Next up, I might actually have a crack at that D-Bus listener, =dbus-register-si
 
 Very similar to Tramp except use double colon:
 C-x C-f /su::/etc/hosts C-x C-f /sudo::/etc/hosts
-* TODO Renaming-My-Media-Using-Dired :noexport:2023:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20230608082742-emacs--Renaming-My-Media-Using-Dired
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-06-08>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20230608082742-emacs--Renaming-My-Media-Using-Dired.jpg
-:END:
-
-#+hugo: more
-
-#+begin_src elisp
-(defun my/rename-media ()
-  (interactive)
-  (setq counter 5000)
-  (setq regex-list
-        '(
-          "/[0-9]\\{14\\}--\\(20[0-9-\.].*\\)__"
-          "\\([Ss]creenshot_[0-9_].*\\)__"
-          "\\([Ss]creenshot_[0-9_].*\\)\.jpg"
-          "\\([Yy]ou[Cc]ut_[0-9_].*\\)__"
-          "--\\(VID_[0-9_].*\\)__"
-          "--\\(IMG[0-9_\(\)].*\\)__"
-          "--\\(IMG-[0-9_\(\)].*\\)-WA"
-          )
-        )
-  (dolist (regex-i regex-list)
-    (goto-char (point-min))
-    (while (re-search-forward regex-i nil t)
-      (setq counter (+ counter 1))
-      (replace-match (concat "DSC" (format "%05d" counter)) t t nil 1)
-      (message (match-string 1))
-      )
-    )
-  )
-#+end_src
-* TODO Improving the Ollama Buddy Experience: Enhanced Prompt Handling and the Future
-
-After spending some time using Ollama Buddy, I’ve decided to slightly break one of my original design principles!
-Relying solely on Emacs' select-region mechanism to send text to the chat buffer, especially when sending messages from within the chat buffer itself, started to feel a little clunky and cumbersome over time. What initially seemed like a clean and simple approach began to disrupt the flow of interaction, particularly during longer conversations.
-My original reasons for enforcing a select-region-only mechanism were:
-1. Ensuring that users had full control over delineating text.
-2. Simplifying the implementation by using region boundaries to define the chat query.
-3. Staying as close as possible to Emacs' core interaction model (I'm not quite sure what I mean by this!)
-4. Improving conversation flow, especially within the chat buffer.
-5. Avoiding the perceived complexity of implementing a dedicated command-line-style prompt.
-6. I wanted to keep things simple and avoid implementing a full chat buffer mode, but doesn’t that mean I still need to set up a mode to link a local keymap?
-
-However, after further use and testing, I now see the value in introducing a more natural and efficient way to interact within the chat buffer, and as it turned out, the prompt mechanism wasn't as difficult as i thought to implement and so far it is still fairly lightweight, around 600 lines.
-I have simply defined a local keymap in the chat buffer and decided on =C-c C-c= to submit the requests based on the text entered after the prompt.  This now feels a little easier and more intuitive.
----
-I do, however, have further plans for Ollama Buddy, here are some ideas:
-** 1. Customizable Role-Based Menus Preset System
-
-Since I’ve decoupled the menu system into a =defcustom= alist, users could theoretically define custom menu configurations within an =.el= file and evaluate them. This opens up the possibility of:
-- Having multiple files represent different menus.
-- Assigning different menus to different roles.
-- Using =completing-read= to select a role based on a chosen filename format with part of the filename containing the role name (maybe use a =denote= type of format?).  The elisp file will be evaluated which will produce a new menu based on the role selected.
-
-Technically, this shouldn’t be too difficult, and the existing alist-based menu generation system already works well.
-I might generate some of my own role preset menus for common tasks, or common roles, developer, writer e.t.c.  Also as I wanted to make Ollama Buddy a little on the fun side, why not some fun presets!!, the possibilities could be endless :)
-** 2. Enhancing Menu Clarity: Distinguishing LLMs Effectively
-
-Since each menu command can be linked to a specific LLM, it would be helpful to clearly display the model associated with each menu item. However, this raises a few design challenges:
-- Simply displaying model names alongside each menu item could clutter the interface, especially with long model names.
-- While the current auto-generated menus can accommodate long names, excessive width could make navigation cumbersome.
- Possible Solutions:
- 
-- Assign a unique letter/number to each LLM and update the menu items accordingly.
-- Experiment with color coding:
-  - Hash LLM names to generate (theoretically) unique colors.
-  - Colorize menu items based on these hashes.
-  - Adjust contrast dynamically to ensure readability across different themes.
-
-I plan to explore the color-based approach, as it could provide a visually intuitive way to distinguish models without overcrowding the menu.
 * TODO CSharp-setup-linux-build :emacs:2025:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20250628085057-emacs--CSharp-setup-linux-build
@@ -1777,417 +1517,6 @@ sudo sysctl -p
 #+end_src
 
 This setup will give you the complete VS Code experience on Arch Linux with full C# development capabilities, including debugging, IntelliSense, and project management!
-* TODO Enhancing vc-mode in Emacs: Showing Git Branches and Tracked Files
-** Displaying Git Branches in the Header Line
-
-When working with Git repositories in Emacs, I often found myself wanting to know which branch I was on without running external commands. The standard =vc-dir= buffer (opened with =C-x v d=) shows your repo status but doesn't prominently display branch information.
-Here's the solution I implemented:
-#+begin_src elisp
-(defun my/vc-dir-show-branches ()
-  "Show Git branches in the header line of the *vc-dir* buffer."
-  (when (and (boundp 'vc-dir-backend) (eq vc-dir-backend 'Git))
-    (let* ((default-directory (if (boundp 'vc-dir-directory) 
-                                  vc-dir-directory 
-                                default-directory))
-           (branches (replace-regexp-in-string "* " "*"
-                                               (string-join
-                                                (split-string
-                                                 (shell-command-to-string "git branch") "\n" t "\\s-*")
-                                                " "))))
-      (setq-local header-line-format 
-                  (propertize (concat "  " branches) 'face '(:inherit bold))))))
-
-;; Add the function to vc-dir-mode-hook
-(add-hook 'vc-dir-mode-hook #'my/vc-dir-show-branches)
-#+end_src
-
-This function does a few key things:
-1. Checks if we're in a Git repository
-2. Gets a list of branches using =git branch=
-3. Formats the output, replacing "* " with "*" to indicate the current branch
-4. Sets the header-line-format to display the branch list in bold
-
-The result is a clean, always-visible list of branches at the top of your =vc-dir= buffer, with the active branch marked by an asterisk.
-** Keeping Branch Display Updated
-
-The above function works great, but there's a catch - when you switch branches, the header doesn't automatically update. Let's fix that with a bit of advice:
-#+begin_src elisp
-;; Define advice function for refreshing branches after switching
-(defun my/after-vc-switch-branch (&rest _args)
-  "Update branch display in all vc-dir buffers after switching branches."
-  (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when (derived-mode-p 'vc-dir-mode)
-        (my/vc-dir-show-branches)))))
-
-;; Add the advice to vc-switch-branch function
-(advice-add 'vc-switch-branch :after #'my/after-vc-switch-branch)
-#+end_src
-
-This bit of code:
-1. Creates an advice function that runs after branch switching
-2. Loops through all open buffers
-3. Updates the branch display in any that are =vc-dir= buffers
-
-With this addition, the branch list updates automatically whenever you use =vc-switch-branch=, keeping your UI in sync with your actual Git state.
-** Showing All Tracked Files
-
-By default, =vc-dir= shows only files with changes. But sometimes I want to see *all* tracked files, especially in complex repositories. Here's my solution:
-#+begin_src elisp
-(defun my/vc-dir-show-tracked-files ()
-  "Show all tracked files in the current vc-dir buffer."
-  (interactive)
-  (when (and (derived-mode-p 'vc-dir-mode)
-             (eq vc-dir-backend 'Git))
-    (let* ((default-directory (if (boundp 'vc-dir-directory) 
-                                  vc-dir-directory 
-                                default-directory))
-           (files (split-string 
-                   (shell-command-to-string "git ls-files")
-                   "\n" t)))
-      (vc-dir-refresh)
-      (dolist (file files)
-        (let ((full-path (expand-file-name file default-directory)))
-          (vc-dir-show-fileentry file))))))
-
-;; Bind it to a key in vc-dir-mode
-(with-eval-after-load 'vc-dir
-  (define-key vc-dir-mode-map (kbd "T") 'my/vc-dir-show-tracked-files))
-#+end_src
-
-This function:
-1. Gets all tracked files using =git ls-files=
-2. Refreshes the =vc-dir= buffer to start with a clean slate
-3. Adds each tracked file to the display using =vc-dir-show-fileentry=
-4. Binds the function to the "T" key in =vc-dir-mode=
-
-Now with a simple keypress, I can toggle between seeing just modified files and seeing all tracked files.
-* TODO Managing-Subversion-Importing-To-Git :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240806210058-emacs--Managing-Subversion-Importing-To-Git
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-08-06 21:00>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240806210058-emacs--Managing-Subversion-Importing-To-Git.jpg
-:END:
-
-#+hugo: more
-
-** Create a Local Subversion Repository on Linux
-*** Prerequisites
-
-Make sure you have Subversion installed on your Linux system. You can install it using the package manager for your distribution. For example, on Debian or Ubuntu, you can use:
-#+BEGIN_SRC shell
-sudo apt update
-sudo apt install subversion
-#+END_SRC
-
-On Red Hat-based distributions like CentOS or Fedora, you might use:
-#+BEGIN_SRC shell
-sudo dnf install subversion
-#+END_SRC
-
-*** Steps to Create a Local SVN Repository
-**** Create the Repository Directory
-
-Create a directory where you want to store your SVN repository. For example:
-#+BEGIN_SRC shell
-mkdir ~/svn_repos
-#+END_SRC
-
-**** Create the Repository
-
-Use the =svnadmin= tool to create a new repository within the directory you just created:
-#+BEGIN_SRC shell
-svnadmin create ~/svn_repos/my_project
-#+END_SRC
-
-**** Import Initial Project Files (Optional)
-
-If you already have a project you want to import into the repository, navigate to the project directory and run:
-#+BEGIN_SRC shell
-svn import . file:///home/your_username/svn_repos/my_project -m "Initial import"
-#+END_SRC
-
-Replace =/home/your_username= with your actual home directory path.
-*** Use the Repository
-**** Checkout the Repository
-
-Checkout a working copy from the repository to your local directory:
-#+BEGIN_SRC shell
-svn checkout file:///home/your_username/svn_repos/my_project ~/my_working_copy
-#+END_SRC
-
-**** Add Files to the Working Copy
-
-Navigate to your working copy directory and add files or directories:
-#+BEGIN_SRC shell
-cd ~/my_working_copy
-echo "Hello, SVN!" > sample.txt
-svn add sample.txt
-#+END_SRC
-
-**** Commit Changes
-
-Commit your changes to the SVN repository:
-#+BEGIN_SRC shell
-svn commit -m "Added sample.txt"
-#+END_SRC
-
-**** Update Working Copy
-
-To update your working copy with the latest changes from the repository, use:
-#+BEGIN_SRC shell
-svn update
-#+END_SRC
-
-*** Common SVN Commands
-
-- Add a file or directory:
-
-#+BEGIN_SRC shell
-svn add <file_or_directory>
-#+END_SRC
-
-- Remove a file or directory:
-
-#+BEGIN_SRC shell
-svn delete <file_or_directory>
-#+END_SRC
-
-- View the status of your working copy:
-
-#+BEGIN_SRC shell
-svn status
-#+END_SRC
-
-- See the log of changes:
-
-#+BEGIN_SRC shell
-svn log
-#+END_SRC
-
-With these steps, you should be able to set up a local SVN repository and start using it for version control on your Linux system.
-** Emacs Tools to Manage an SVN Repository
-*** `psvn.el`
-
-- **Description**: =psvn.el= is a popular and comprehensive Subversion interface for Emacs. It offers various features to manage SVN repositories directly within Emacs.
-- **Installation**: It may come pre-installed with some Emacs distributions, but if not, you can download it from its [[http://www.xsteve.at/prg/emacs/psvn.el][repository]].  To use =psvn.el=, add the following to your Emacs configuration:
-
-#+BEGIN_SRC emacs-lisp
-(autoload 'svn-status "psvn" "Run `svn status`." t)
-#+END_SRC
-
-- **Usage**: Use =M-x svn-status= to start interacting with your SVN repository.
-
-*** Built-in VC (Version Control) Mode
-
-- **Description**: Emacs comes with a built-in version control (VC) mode that supports various version control systems, including SVN.
-- **Configuration**: No additional configuration is needed to use =vc= mode for SVN; it should work out of the box.
-- **Usage**: When you open a file in a directory under SVN control, you can use various VC commands:
-  - =C-x v v=: Perform the next appropriate version control operation (e.g., check-in, check-out).
-  - =C-x v i=: Register the file with the version control system.
-  - =C-x v d=: Display the status of files in the directory.
-  - =C-x v ~ <revision>=: Check out a specific revision.
-
-*** `dsvn.el`
-
-- **Description**: =dsvn.el= is another Subversion front-end for Emacs that gives a =dired=-like interface for managing SVN repositories.
-- **Installation**: You can install =dsvn= via MELPA by adding the following to your configuration if you're using the package manager:
-
-#+BEGIN_SRC emacs-lisp
-(use-package dsvn
-  :ensure t)
-#+END_SRC
-
-- **Usage**: Use =M-x svn-update= to update the SVN repository, =M-x svn-status= for the status of the repository, and other SVN-related commands.
-
-*** `magit-svn` (if using Magit)
-
-- **Description**: If you are already using =magit= for Git repositories but also need to handle SVN repositories, =magit-svn= can be useful. It integrates SVN support into =magit=.
-- **Installation**: You'll need to install both =magit= and =magit-svn=.
-
-#+BEGIN_SRC emacs-lisp
-(use-package magit
-  :ensure t)
-
-(use-package magit-svn
-  :ensure t
-  :after magit
-  :config
-  (magit-svn-mode 1))
-#+END_SRC
-
-- **Usage**: This package provides SVN support within the familiar Magit interface. You can initialize it within a repository with =M-x magit-svn=.
-
-*** `ISVN` (Interactive SVN)
-
-- **Description**: ISVN provides an interactive interface for Subversion within Emacs.
-- **Installation**: You can install ISVN from the Emacs Wiki or its dedicated repository.
-- **Usage**: You can interact with your repository using intuitive keybindings specific to ISVN.
-
-*** Example Configuration
-
-Here’s an example of a minimal =.emacs= or =init.el= configuration to get started with the recommended tools:
-#+BEGIN_SRC emacs-lisp
-;; Use built-in VC Mode for SVN
-(setq vc-handled-backends '(SVN Git))
-
-;; Load PSVN
-(autoload 'svn-status "psvn" "Run `svn status`." t)
-
-;; Example keybinding for PSVN
-(global-set-key (kbd "C-x s") 'svn-status)
-
-;; Optional: Enable magit-svn if you're using Magit
-(use-package magit
-  :ensure t)
-
-(use-package magit-svn
-  :ensure t
-  :after magit
-  :config
-  (magit-svn-mode 1))
-
-;; Optional: Use dsvn if preferred
-(use-package dsvn
-  :ensure t)
-#+END_SRC
-
-** Clone a Git repository from a local Subversion repository
-
-Yes, you can use a locally checked out Subversion repository as the source for ~git svn clone~. However, it requires setting up a temporary local Subversion server if you want to do this without re-checking out from the central repository. Here’s how you can achieve this:
-*** 1. Install a Subversion Server
-
-Ensure you have ~svnserve~ installed. On Ubuntu, you can install it with:
-#+BEGIN_SRC sh
-sudo apt-get update
-sudo apt-get install subversion
-#+END_SRC
-
-*** 2. Start Subversion Server
-
-Run ~svnserve~ to serve your local repository. You need to specify the root directory where your Subversion repository is located. For example:
-#+BEGIN_SRC sh
-svnserve -d -r /home/jdyer/source/working
-#+END_SRC
-
-This starts the server as a daemon (~-d~) and sets the root of the served files to ~ /home/jdyer/source/working~ (~-r~).
-*** 3. Using ~git svn clone~
-
-Now, you can use ~git svn clone~ to clone the repository via the ~svn://~ protocol. Assuming your project in the Subversion repository is called ~my_project~:
-#+BEGIN_SRC sh
-git svn clone svn://localhost/my_project my_project.git
-#+END_SRC
-
-This command clones the Subversion repository located at ~svn://localhost/my_project~ into a Git repository named ~my_project.git~.
-*** Example
-
-Here’s the complete process summarized in a series of commands:
-#+BEGIN_SRC sh
-# Step 1: Install svnserve if not already installed
-sudo apt-get update
-sudo apt-get install subversion
-
-# Step 2: Start svnserve, serving your local Subversion repository
-svnserve -d -r /home/jdyer/source/working
-
-# Step 3: Clone the repository with git svn
-git svn clone svn://localhost/my_project my_project.git
-#+END_SRC
-
-*** Stopping the server
-
-Once the cloning process is done, don’t forget to stop the ~svnserve~ process if it’s no longer needed. You can find its process ID and stop it.
-#+BEGIN_SRC sh
-pkill svnserve
-#+END_SRC
-
-*** Note
-
-This approach avoids re-fetching data from a remote Subversion repository and speeds up the conversion process by using the locally checked-out copy. However, be cautious: this setup is quite manual and assumes good familiarity with both SVN and Git tools.
-* TODO Emacs-core-copy-minibuffer-candidate-embark :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20241209134058-emacs--Emacs-core-copy-minibuffer-candidate-embark
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-12-09 13:40>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20241209134058-emacs--Emacs-core-copy-minibuffer-candidate-embark.jpg
-:END:
-
-Streamlining Minibuffer Efficiency: Copying Icomplete Candidates to the Kill Ring
-The power of Emacs lies in its extensibility and the ability to customize nearly any aspect of its behavior. For users of the =icomplete= framework-or for those working primarily in the minibuffer-there’s often a need to copy a candidate (i.e., the currently selected or highlighted result in a completion list) to the kill ring for reuse elsewhere. While packages like Embark provide this functionality out of the box, it’s not always necessary to carry the overhead of an external dependency for something so specific.
-In this blog post, we’ll explore a lightweight replacement for this aspect of Embark: copying the currently selected minibuffer candidate to the kill ring. We’ll achieve this with a simple custom function and keybinding, giving you the functionality you need without introducing additional complexity into your Emacs configuration.
-** Why Copy Minibuffer Candidates?
-
-Minibuffer candidates represent items generated via completion mechanisms, such as file paths, function names, or command options. Copying a candidate lets you extract the current selection, either for reuse in another buffer or for other interactive purposes. For example:
-- *Programming workflows*: Copy a partial function name to paste into a code snippet.
-- *Navigation*: Grab a file path for reference or to share elsewhere.
-- *General efficiency*: Quickly transfer the displayed suggestion for further processing.
-
-If you’re using =icomplete=, which enhances the built-in minibuffer completion experience, adding this capability takes only a few lines of code.
-** The Function: =my-icomplete-copy-candidate=
-
-Here’s the code we'll be working with:
-#+begin_src elisp
-(defun my-icomplete-copy-candidate ()
-  "Copy the current Icomplete candidate to the kill ring."
-  (interactive)
-  (let ((candidate (car completion-all-sorted-completions)))
-    (when candidate
-      (kill-new (substring-no-properties candidate))
-      (abort-recursive-edit))))
-#+end_src
-
-*** Breaking It Down
-
-Let’s step through the functionality:
-1. *=completion-all-sorted-completions=*: This variable holds the list of all completion candidates in order of relevance. The highlighted or selected candidate resides at the top of this list (=car=).
-
-2. *=kill-new=*: The =kill-new= function adds the provided string to the kill ring. By doing this, you can immediately reuse the copied candidate elsewhere via =yank= (=C-y=).
-
-3. *=substring-no-properties=*: This ensures that the copied candidate is plain text, stripping any text properties (e.g., face attributes) that might otherwise clutter the kill ring.
-
-4. *=abort-recursive-edit=*: After copying, the function exits the minibuffer. This behavior ensures seamless interaction-when the candidate is copied, you can immediately move on without needing to manually close the completion session.
-
-*** Error Handling
-
-The function gracefully handles cases where there’s no active candidate (=when candidate=), ensuring it doesn’t break unexpectedly.
-** The Key Mapping
-
-After defining the function, we bind it to an intuitive key combination within the minibuffer’s completion context:
-#+begin_src elisp
-(define-key minibuffer-local-completion-map (kbd "C-c ,") 'my-icomplete-copy-candidate)
-#+end_src
-
-*** Why =C-c ,=?
-
-This keybinding was chosen for its mnemonic value:
-- =C-c= acts as a common prefix for user-defined functionality.
-- The =,= symbol feels natural for an action like “replicate” or “copy” because of its lightweight, fast motion on the keyboard.
-
-Of course, the keybinding is entirely customizable-you can select any sequence that fits your workflow.
-** Real-World Use Case
-
-Imagine you’re in a workflow where you frequently rely on Icomplete to discover file names, commands, or completions for other textual inputs. Let’s say you want to copy the current candidate to use it elsewhere:
-1. *Trigger completion*: Start completion via a command that leverages =icomplete= (e.g., =find-file=).
-
-2. *Select a candidate*: Navigate through the candidate list using the usual keys (e.g., =TAB= or =C-n=).
-
-3. *Copy the candidate*: When the desired candidate is highlighted, press =C-c ,= to copy it to the kill ring. You can confirm the copy by immediately accessing the kill ring (=C-y= or =M-y=).
-
-4. *Exit the minibuffer*: Since the function automatically aborts the minibuffer session, you can proceed with your workflow without manual intervention.
-
-** Why Use This Instead of Embark?
-
-While Embark is a powerful package for minibuffer actions, its general-purpose approach might be overkill if all you need is the ability to copy candidates. Here’s why you might prefer a custom solution like =my-icomplete-copy-candidate=:
-- *Lightweight*: No need to install and configure a separate package.
-- *Simplicity*: Single-purpose implementation focuses only on copying candidates.
-- *Control*: Easily customizable to fit specific needs or workflows.
-
-For users who already rely heavily on Embark’s wider feature set, this function likely overlaps with existing capabilities. But for those aiming to keep their Emacs configuration minimal, it’s a great alternative.
-** Closing Thoughts
-
-Implementing small, targeted functions like =my-icomplete-copy-candidate= demonstrates the power of Emacs to adapt to individual needs. By taking control of your minibuffer workflow with just a few lines of code, you can replicate the functionality of more complex tools while keeping your setup lightweight and easy to maintain.
-Try incorporating this function into your Emacs workflow, and let us know how it enhances your productivity! Do you have other minibuffer tricks or customizations to share? Drop them in the comments below or join the discussion!
 * TODO A-DIY-consult-theme-with-Live-Preview :emacs:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260417110000-emacs--A-DIY-consult-theme-with-Live-Preview
@@ -2197,17 +1526,21 @@ Try incorporating this function into your Emacs workflow, and let us know how it
 :END:
 
 The Emacs-DIYer project has been quietly ticking along, chipping away at external packages one built-in replacement at a time, and today I found myself back in that groove with two small but related bits of theme plumbing.  The first was a nagging little annoyance that had been sitting in my config for ages, the second was a proper feature I had been meaning to tackle for a while, a live-preview =consult-theme= replacement that plays nicely with the rest of my accent-colour syncing setup.
+
 #+hugo: more
 
 Some context first.  I have a function =my/sync-ui-accent-color= that takes a colour and cascades it across the mode-line, cursor, tab-bar, highlights, fringes, window dividers, the lot, so that switching themes also switches the *accent* consistently.  On startup I pin it to =orange=, and I also wire it into =enable-theme-functions= so every time a new theme loads, the accent re-syncs to match.
 All good in theory.  In practice, the function's body did this:
+
 #+begin_src elisp
 (let* ((accent-color (or color (read-color "Select accent color: ")))
        ...)
 #+end_src
 
 Spot the problem?, whenever the =enable-theme-functions= hook fired with no argument, that =or= would happily fall through to =read-color= and prompt me for a colour, *every single time* I changed theme.  Which, given that I was about to build a theme switcher that hammered =load-theme= on every keystroke, was absolutely not going to fly.
+
 The fix was a tiny bit of state, a defvar to remember the last colour I actually chose, and then use that as the fallback instead of prompting:
+
 #+begin_src elisp
 (defvar my/sync-ui-accent-color--current "orange"
   "Current accent color used by `my/sync-ui-accent-color'.")
@@ -2222,16 +1555,22 @@ The fix was a tiny bit of state, a defvar to remember the last colour I actually
 #+end_src
 
 So now, interactive calls prompt as before, programmatic calls (startup, theme hook, my shiny new previewer) silently reuse whatever colour was last applied, and the defvar gets updated on every interactive run so the "current" colour always reflects reality.  Small change, entirely invisible, makes everything else possible.
+
 Right, so what was I actually after?  I really like =consult-theme='s live preview, you start typing or scrolling through candidates and the theme applies *immediately*, you get to see exactly what that =doom-oceanic-next= or =modus-vivendi-tinted= is going to look like before you commit to it, and if you change your mind and hit =C-g= it drops you back to where you started, no harm done.  It is one of those little touches that, once you have had it, you really do not want to go back.
+
 But this is the Emacs-DIYer project, which means the rule is the same as it always is, built-ins only, no external deps.  So could I rebuild this with nothing but what ships with Emacs?, it turned out to be surprisingly compact.
+
 The trick breaks down into four bits:
+
 1. Snapshot =custom-enabled-themes= before the =completing-read= starts, so we have something to roll back to.
 2. Install a buffer-local =post-command-hook= inside the minibuffer that inspects the current candidate on every command.
 3. On each new candidate, =disable-theme= the old preview and =load-theme= the new one (with =NO-CONFIRM= = =t= so we do not get the safety prompt every keystroke).
 4. Wrap the whole thing in =unwind-protect= so both a clean return *and* a =C-g= quit land us back at the saved themes.  The function body then loads the actual final pick, so the single source of truth for "what did the user commit to" is the return value of =completing-read=.
 
 The only mildly fiddly bit was step 2, figuring out what the "current candidate" actually is during a =completing-read=.  With =icomplete-mode= or =fido-mode= active (which I tend to have on), the head of =completion-all-sorted-completions= is the currently selected candidate, you just take the =car= and you are done.  Without icomplete, there is no equivalent notion of a "highlighted" line, so the best we can do is read =minibuffer-contents-no-properties= and preview on exact matches (which still gives you a nice preview when you TAB-complete).
+
 Here is the whole thing:
+
 #+begin_src elisp
 (defun my/consult-theme (theme)
   "Load THEME with live preview during candidate navigation.
@@ -2274,108 +1613,11 @@ On abort (C-g), restores the themes enabled before the preview began."
 #+end_src
 
 The binding is =M-m=, which I had already pencilled in for theme stuff a while ago, there was a commented-out =(global-set-key (kbd "M-m") #'consult-theme)= sitting in my init like a little sticky note reminding me I was going to get to this eventually.
+
 And the really satisfying bit is the way the whole thing composes with the accent-sync hook.  Because =enable-theme-functions= fires on every =load-theme=, and my preview loop hammers =load-theme= on every keystroke in the minibuffer, the mode-line, cursor, tab-bar and everything else flash through the new colour scheme *at exactly the same time* as the main theme previews.  Switching themes feels like switching skins, the whole UI repaints in one beat.  No extra wiring was needed, it just fell out of the existing hook plumbing, which is honestly the best kind of feature, the sort you get for free because the underlying bits were designed right in the first place.
+
 Two small, quiet changes, one that silences an accidental prompt, one that replaces a whole package with about thirty lines of elisp, and between them they have made theme-switching in my config feel considerably more polished than it did yesterday.  The Emacs-DIYer project grows another little notch, the dependency list shrinks by one, and my =M-m= key finally earns its keep.
 You can find the Emacs-DIYer project at [[https://github.com/captainflasmr/emacs-diyer][captainflasmr/emacs-diyer]], everything lives in =README.org= and tangles out to a flat =init.el=, which you can pull in alongside (or instead of) your existing config.
-Next up, I think I might turn my attention to the mode-line itself, there is plenty of DIY waiting to happen there too!
-* TODO Streamlining the Selected-Window-Accent-Mode in Emacs :emacs:2025:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20250304162617-emacs--Streamlining-the-Selected-Window-Accent-Mode-in-Emacs
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2025-03-04 16:26>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20250304162617-emacs--Streamlining-the-Selected-Window-Accent-Mode-in-Emacs.jpg
-:END:
-
-Today, I'm examining a significant refactoring of my =selected-window-accent-mode= package, which has been transformed from a feature-rich but complex tool to highlight the selected-window into a leaner, more focused implementation.
-** What is Selected Window Accent Mode?
-
-For those unfamiliar with this package, =selected-window-accent-mode= is a utility that visually distinguishes your currently active Emacs window by applying accent colors to its fringes, mode line, and other UI elements. This is particularly useful when working with multiple split windows, as it makes it immediately clear which window has focus.
-** The Evolution: From Complex to Streamlined
-
-Let's have a look at my streamlining and explore the key differences between the original version and the streamlined implementation.
-*** 1. Reduced Dependencies
-
-*Original Version:*
-#+begin_src elisp
-(require 'json)
-(require 'color)
-(require 'transient)
-#+end_src
-
-*Streamlined Version:*
-#+begin_src elisp
-(require 'color)
-#+end_src
-
-The new implementation drops the dependencies on =json= and =transient=, eliminating functionality related to JSON parsing (for pywal integration) and the transient interface. This makes the package lighter and reduces potential compatibility issues.
-*** 2. Removed Advanced Features
-
-Several advanced features have been removed from the streamlined version:
-- *Pywal Integration*: The ability to use colors from pywal-generated palettes
-- *Background Blending*: The feature to blend accent colors with window backgrounds
-- *Complementary Colors*: The ability to automatically generate complementary foreground colors
-- *Header Line Handling*: Special logic for header line formatting and heights
-
-Just a note on the *Header Line Handling* - Due to technical limitations of the current implementation of Emacs it wasn't quite possible to create a tiling window manager full surrounding border, although I do have hope as I read somewhere that a header-line-active and header-line-inactive was being considered.  I also ran into problems when trying to preserve any buffer that already utilized the header-line.  So my solution?, is to just remove the calculation so in fact the 'tiling highlighting option now generates an accent around 3 sides, like a bucket!
-*** 3. Simplified Color Handling
-
-The original version had complex color manipulation functions:
-#+begin_src elisp
-(defun selected-window-accent--increment-color-brightness (hex-color factor)...)
-(defun selected-window-accent--decrement-color-brightness (hex-color factor)...)
-(defun selected-window-accent--invert-color (hex-color)...)
-(defun selected-window-accent--set-foreground-color (bg-color)...)
-(defun selected-window-accent-blend-colors (color1 color2 alpha)...)
-#+end_src
-
-These have been consolidated into a single, straightforward function in the new version:
-#+begin_src elisp
-(defun selected-window-accent--determine-foreground (bg-color)
-  "Determine appropriate foreground color based on BG-COLOR brightness."
-  (if (string-greaterp bg-color "#888888") "#000000" "#ffffff"))
-#+end_src
-
-*** 5. Cleaner Window Handling
-
-The core =selected-window-accent= function has been streamlined significantly. The original version was approximately 120 lines, while the new implementation achieves the same core functionality in about 70 lines. The window handling code is more focused and easier to follow.
-*** 6. Simpler Command Interface
-
-The original package used a transient interface (similar to Magit) for its commands.
-#+begin_src elisp
-(transient-define-prefix selected-window-accent-transient ()
-  "Transient for selected window accent."
-  ["Selected Window Accent"
-   ["Main"
-    ("s" "Switch Style" selected-window-accent-switch-selected-window-accent-style)
-    ...]])
-#+end_src
-
-The streamlined version replaces this with a simple keymap:
-#+begin_src elisp
-(defvar selected-window-accent-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "w") 'selected-window-accent-switch-style)
-    ...
-    map)
-  "Keymap for selected-window-accent commands.")
-#+end_src
-
-** What Was Lost?
-
-While the streamlined version is more efficient, it does sacrifice some functionality:
-- *Foreground Color Controls*: The ability to fine-tune foreground colors with incremental adjustments
-- *Complementary Color Generation*: Automatic creation of complementary color schemes
-- *Background Blending*: The feature to blend accent colors with window backgrounds
-- *Configuration Export*: The function to export current settings to a buffer
-- *Pywal Integration*: The ability to use colors from pywal-generated palettes
-- *Transient Interface*: The more sophisticated command menu
-
-If you want to use the more function rich version, I would recommend pulling a previous version.
-** Is the Simpler Version Better?
-
-Whether the streamlined version is "better" depends on your needs:
-- If you want a lightweight, focused tool that simply highlights your active window without fuss, the new version is ideal
-- If you need fine-grained control over color schemes, pywal integration, or other advanced features, you might prefer the original version
 * TODO Pulling-Previous-Versions-with-vc-retrieve-tag :emacs:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260412173615-emacs--Pulling-Previous-Versions-with-vc-retrieve-tag
@@ -2434,449 +1676,6 @@ No configuration needed, everything is stock Emacs, just the bindings worth comm
 #+end_src
 
 Next up I think I want to have a go at binding a key in =log-view-mode= that runs =vc-retrieve-tag= on the revision at point directly, because that one step of copying the SHA across by hand is really the only bit of friction left in the flow.  Probably an easy little elisp exercise, although could be somebody has already written one, so I should check that first!
-* TODO A tab-bar-history-mode Quirk with Repeated Commands :emacs:2026:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20260409104808-emacs--A-tab-bar-history-mode-Quirk-with-Repeated-Commands
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2026-04-09 10:48>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260409104808-emacs--A-tab-bar-history-mode-Quirk-with-Repeated-Commands.jpg
-:END:
-I teased this at the end of my last post about the DIY =dired-collapse= replacement, and honestly I thought I was going to leave it alone, but the more I stepped through dired buffers the more it bothered me, so here we are, a whole little post about one =eq= check in =tab-bar.el= and the mild afternoon of head-scratching it cost me.
-#+hugo: more
-
-I use =tab-bar-history-mode= the way a lot of people used to use =winner-mode=, it remembers window configurations and lets me hop backwards and forwards through them with =C-c j= and =C-c k=, wrapped in a little transient keymap so I can just keep tapping =j= to walk further back without the prefix:
-#+begin_src elisp
-(global-set-key (kbd "C-c j") #'(lambda() (interactive)
-                                  (tab-bar-history-back)
-                                  (my/repeat-history)))
-(global-set-key (kbd "C-c k") #'(lambda() (interactive)
-                                  (tab-bar-history-forward)
-                                  (my/repeat-history)))
-#+end_src
-
-Lovely.  Except I started noticing that when I stepped down through a few dired directories, say =~/projects= then =foo/= then =foo/bar/= then =foo/bar/baz/=, pressing =C-c j= did not walk me back one level at a time, it flung me all the way up to =~/projects= in one hop, skipping everything in between.  At first I blamed the new dired-collapse code (of course I did!, it was the most recent change, that is always the prime suspect), but even disabling collapse did not fix it, and that is when it dawned on me that this had probably been happening for ages and I had just never paid proper attention.
-Right, so time to actually read the source.  =tab-bar-history-mode= lives in =tab-bar.el= and its recording is driven by two hooks, =tab-bar--history-pre-change= on =pre-command-hook= and =tab-bar--history-change= on =window-configuration-change-hook=.  The pre-change grabs the current window configuration and stashes =this-command= into =tab-bar-history-pre-command=, and then the post-change is supposed to commit it to the back list.  Except for this little guard:
-#+begin_src elisp
-(defun tab-bar--history-change ()
-  (when (and (not tab-bar-history-omit) tab-bar-history-old
-             ;; Don't register changes performed by the same command
-             ;; repeated in sequence, such as incremental window resizing.
-             (not (eq tab-bar-history-done-command
-                      tab-bar-history-pre-command))
-             (zerop (minibuffer-depth)))
-    ;; ... actually push onto the back list ...
-    (setq tab-bar-history-old nil))
-  (setq tab-bar-history-done-command tab-bar-history-pre-command))
-#+end_src
-
-Read that =eq= check carefully, the comment is the giveaway, "Don't register changes performed by the same command repeated in sequence, such as incremental window resizing."  In other words, if you call =shrink-window= five times in a row, you do not want five separate history entries, you want one.  Totally reasonable design!, but the knock-on effect is that if =this-command= is =dired-find-file= on the first =RET= and =dired-find-file= on the second =RET= and =dired-find-file= on the third =RET=, only the first one gets recorded, because commands two and three are "the same command repeated in sequence" from the history's point of view.
-So when I walked down =~/projects → foo → bar → baz=, my back list genuinely only contained the starting state, =~/projects=, because every subsequent step was filtered out.  That is exactly the "jumps higher up the tree" behaviour I was seeing, and it had nothing to do with dired-collapse at all, collapse just made it more visible because I was navigating deeper in fewer actual keystrokes.
-Once you know the mechanism, the fix writes itself.  All I need to do is reset =tab-bar-history-done-command= back to =nil= before each dired navigation, so that the =eq= check in =tab-bar--history-change= always fails for dired, and every step gets recorded.  A tiny helper and a pinch of =:before= advice does the job:
-#+begin_src elisp
-(defun my/tab-bar-history-allow-repeat (&rest _)
-  "Let `tab-bar-history-mode' record consecutive invocations of a command."
-  (when (bound-and-true-p tab-bar-history-mode)
-    (setq tab-bar-history-done-command nil)))
-
-(with-eval-after-load 'dired
-  (dolist (cmd '(dired-find-file
-                 dired-find-alternate-file
-                 dired-find-file-other-window
-                 dired-up-directory
-                 dired-jump))
-    (advice-add cmd :before #'my/tab-bar-history-allow-repeat)))
-#+end_src
-
-That is it, really, no config variable, no minor mode, just a targeted nudge to undo the dedup for the specific commands where I want every step preserved.  I went with a =dolist= rather than a single advice because I know I will want to extend the list later, and it makes it obvious what is being touched.  =dired-find-file= is the main one, =dired-up-directory= covers pressing =^=, =dired-jump= is for when I pop back into dired from elsewhere, and the other two are belt-and-braces for the less-common variants.
-Probably not, to be honest.  The existing dedup behaviour is sensible for window resizing and a bunch of other "spammy" commands, and I would not want =tab-bar-history-mode= to start remembering every single keystroke of =shrink-window-horizontally=.  What would be nice is a =defcustom= listing commands that should bypass the dedup, something like =tab-bar-history-no-dedup-commands=, so that users could opt individual commands out without advising them.  Maybe a future patch!, although for now the four lines of =advice-add= solve my problem completely and I am not convinced anyone else is bumping into this, so I will sit on it.
-The thing I love about running into quirks like this is how much you learn about Emacs by just reading the source for ten minutes.  I now have a much better mental model of how =tab-bar-history-mode= actually works, the split between =pre-command-hook= and =window-configuration-change-hook=, the =tab-bar-history-old= stash, the =tab-bar-history-omit= flag that the back/forward commands set so they do not record their own restoration as a new history step.  None of that is documented in any particularly prominent place, it is just sitting there in =tab-bar.el= waiting for you to have a reason to go looking.
-And next time I notice an Emacs package behaving in a way I did not expect, I will, hopefully, be a little quicker to open the source and a little slower to blame the most recent change I made.  Although, honestly, sometimes it really is the most recent change, so future me should not get complacent!
-Next up, I am starting to wonder whether the same dedup bites =next-buffer=, =other-window= and a few other commands I hammer repeatedly, so will add them to the list if I notice the same jumpy behaviour there.
-* TODO Integrating CMake with Emacs :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240728172557-emacs--Integrating-CMake-with-Emacs
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-07-28 17:25>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240728172557-emacs--Integrating-CMake-with-Emacs.jpg
-:END:
-
-Emacs is an incredibly versatile text editor, and with a bit of Elisp magic, you can tightly integrate your build systems into it. In this tutorial, we will illustrate how to use Emacs for seamless integration with *CMake* through custom Elisp functions and transients. So, let's get started!
-#+hugo: more
-
-*Introducing the Key Functions*
-Here's an overview of the custom Elisp functions to handle CMake commands:
-#+begin_src elisp
-(defvar cmake-preset
-  "build/linux/debug"
-  "cmake-preset")
-
-(defun change-directory-and-run (dir command bufname)
-  "Change to DIR and run the COMMAND."
-  (let ((default-directory dir))
-    (async-shell-command command bufname)
-    (message "Running command: %s:%s" dir command)))
-
-(defun run-exe-command (dir exe bufname)
-  "Run EXE from a specified DIR."
-  (message "run-exe-command: %s:%s:%s" dir exe bufname)
-  (change-directory-and-run dir exe bufname))
-
-(defun run-cmake-command (command)
-  "Run COMMAND from the top level of the project."
-  (message command)
-  (change-directory-and-run (project-root (project-current t)) command "*cmake*"))
-
-(defun kill-async-buffer (buffer-name)
-  "Kill the async buffer with BUFFER-NAME."
-  (let ((buffer (get-buffer buffer-name)))
-    (when buffer
-      (kill-buffer buffer)
-      (message "Killed buffer: %s" buffer-name))))
-
-(defun list-cmake-presets ()
-  "List available CMake presets using `cmake --list-presets=configure`."
-  (let ((output (shell-command-to-string "cmake --list-presets=configure")))
-    (delq nil
-          (mapcar (lambda (line)
-                    (if (string-match "^\\s-+\"\\([^\"]+\\)\"\\s-*$" line)
-                        (match-string 1 line)))
-                  (split-string output "\n")))))
-
-(defun transient-select-cmake-preset ()
-  "Function to select a CMake preset."
-  (interactive)
-  (let* ((presets (list-cmake-presets))
-         (preset (completing-read "Select CMake preset: " presets nil t)))
-    (setq cmake-preset preset)
-    (message "Selected CMake preset: %s" preset)))
-#+end_src
-
-*Explanation of Functions*
-1. `change-directory-and-run`:
-   - This helper function changes the directory to `dir` and runs the specified `command` in an asynchronous shell.
-
-2. `run-exe-command`:
-   - Executes an executable `exe` from a specific directory `dir` and associates the output with `bufname`.
-
-3. `run-cmake-command`:
-   - Runs a CMake command from the top-level of the current project directory.
-
-4. `kill-async-buffer`:
-   - Kills the async buffer named `buffer-name`.
-
-5. `list-cmake-presets`:
-   - Lists all available CMake presets using the `cmake --list-presets=configure` command.
-
-6. `transient-select-cmake-preset`:
-   - Allows the user to select a CMake preset interactively.
-
-*Creating the Transient Interface*
-Next, we define our transient interface for various CMake-related tasks:
-#+begin_src elisp
-(transient-define-prefix build-transient ()
-  "Build and Diagnostic transient commands."
-  ["Build"
-   ["CMake"
-    ("p" "Set Preset" transient-select-cmake-preset)
-    ("c" "Configure"
-     (lambda () (interactive)
-       (run-cmake-command (format "cmake --preset %s" cmake-preset))))
-    ("RET" "Build"
-     (lambda () (interactive)
-       (run-cmake-command (format "cmake --build --preset %s" cmake-preset))))
-    ("i" "Install"
-     (lambda () (interactive)
-       (run-cmake-command (format "cmake --install %s" cmake-preset))))
-    ("f" "Refresh"
-     (lambda () (interactive)
-       (run-cmake-command (format "cmake --preset %s --fresh" cmake-preset))))
-    ("x" "Clean"
-     (lambda () (interactive)
-       (run-cmake-command "rm -rf build")))
-    ("s" "List Presets"
-     (lambda () (interactive)
-       (run-cmake-command "cmake --list-presets=configure")))]
-   ["Flymake"
-    ("t" "Toggle Flycheck" flymake-mode)
-    ("d" "Show Diagnostics" flymake-show-buffer-diagnostics)]
-   ["Coding"
-    ("j" "Fancy Stuff"
-     (lambda () (interactive)
-       (call-interactively 'eglot)
-       (flymake-mode 1)
-       (company-mode 1)))
-    ("u" "Undo Fancy Stuff"
-     (lambda () (interactive)
-       (eglot-shutdown-all)
-       (flymake-mode -1)
-       (company-mode -1)))
-    ("g" "Stop eglot"
-     (lambda () (interactive)
-       (eglot-shutdown-all)))]
-   ["Run"
-    ("r" "All"
-     (lambda () (interactive)
-       (run-exe-command
-        (concat (project-root (project-current t))
-                "build/windows/debug/bin/Debug")
-        "CigiDummyIG.exe" "*Running CigiDummyIG.exe*")
-       (run-exe-command
-        (concat (project-root (project-current t))
-                "build/windows/debug/bin/Debug")
-        "CigiMiniHostCSharp.exe" "*Running CigiMiniHostCSharp.exe*")))
-    ("1" "CigiDummyIG"
-     (lambda () (interactive)
-       (run-exe-command
-        (concat (project-root (project-current t))
-                "build/windows/debug/bin/Debug")
-        "CigiDummyIG.exe"
-        "*Running CigiDummyIG.exe*")))
-    ("2" "CigiMiniHost"
-     (lambda () (interactive)
-       (run-exe-command
-        (concat (project-root (project-current t))
-                "build/windows/debug/bin/Debug")
-        "CigiMiniHost.exe"
-        "*Running CigiMiniHost.exe*")))
-    ("3" "CigiMiniHostCSharp"
-     (lambda () (interactive)
-       (run-exe-command
-        (concat (project-root (project-current t))
-                "build/windows/debug/bin/Debug")
-        "CigiMiniHostCSharp.exe"
-        "*Running CigiMiniHostCSharp.exe*")))]
-   ["Kill"
-    ("5" "CigiDummyIG (k)"
-     (lambda () (interactive)
-       (kill-async-buffer "*Running CigiDummyIG.exe*")))
-    ("6" "CigiMiniHost (k)"
-     (lambda () (interactive)
-       (kill-async-buffer "*Running CigiMiniHost.exe*")))
-    ("7" "CigiMiniHostCSharp (k)"
-     (lambda () (interactive)
-       (kill-async-buffer "*Running CigiMiniHostCSharp.exe*")))
-    ("k" "All (k)"
-     (lambda () (interactive)
-       (kill-async-buffer "*Running CigiDummyIG.exe*")
-       (kill-async-buffer "*Running CigiMiniHost.exe*")
-       (kill-async-buffer "*Running CigiMiniHostCSharp.exe*")))]])
-#+end_src
-
-*Key Bindings for Transient Interface*
-1. *CMake Commands*:
-   - Set CMake preset (`p`)
-   - Run CMake configure (`c`)
-   - Build project (`RET`)
-   - Install project (`i`)
-   - Refresh build (`f`)
-   - Clean build directory (`x`)
-   - List available presets (`s`)
-
-2. *Flymake Diagnostics*:
-   - Toggle Flycheck (`t`)
-   - Show diagnostics (`d`)
-
-3. *Coding Helpers*:
-   - Engage coding helpers like Eglot and Flymake (`j`)
-   - Disable coding helpers (`u`)
-   - Stop Eglot (`g`)
-
-4. *Executable Commands*:
-   - Run all predefined executables (`r`)
-   - Individual executable commands (`1`, `2`, `3`)
-
-5. *Kill Async Buffers*:
-   - Kill specific async buffers (`5`, `6`, `7`)
-   - Kill all async buffers at once (`k`)
-
-*Setting Up Global Keybinding*
-Finally, bind the transient to a global key for easy access:
-#+begin_src elisp
-(global-set-key (kbd "M-RET") 'build-transient)
-#+end_src
-
-*Conclusion*
-By integrating these Elisp functions and transients into your Emacs setup, you can significantly streamline your CMake-based development workflow. This custom interface allows quick access to build commands, diagnostic tools, and executable runners, making Emacs a powerful IDE for CMake projects. Happy coding!
-* TODO Prog-Mode Folding With a Transient :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240728085110-emacs--Prog-Mode-Folding-With-Transient
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-07-28 08:51>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240728085110-emacs--Prog-Mode-Folding-With-Transient.jpg
-:END:
-
-I'm looking on ways to enhance my Emacs coding experience and especially regarding the use of cmake and folding.  More on cmake in a future post, but regarding the folding aspect, my interest was rekindled when I looked into a new package called =outline-indent=, in principle it seems like a simple and cool idea to leverage the =outline-mode= to program fold based on indentation levels.
-#+hugo: more
-
-#+attr_org: :width 300px #+attr_html: :width 100% [[file:static/emacs/20240728085110-emacs--Prog-Mode-Folding-With-Transient.jpg]]
-Of course org heavily leans on =outline-mode= for much of its folding and I've been using <TAB> and <S-TAB> for quite a while which toggle cycles headings, although less on the navigation aspect as I rely on org speed commands.
-A while ago I found some simple agnostic folding elisp using =selective-display= :
-#+begin_src elisp
-(defun my/fold ()
-  "Fold text indented same of more than the cursor."
-  (interactive)
-  (if (eq selective-display (1+ (current-column)))
-      (set-selective-display 0)
-    (set-selective-display (1+ (current-column)))))
-#+end_src
-
-Which folds everything in the buffer based on the cursor position and just toggles back and forth.  I found this pretty cool when I found it but I do keep forgetting about it, well now I am going to try and go full throttle on some agnostic level folding in source code I might bring this into the general concept introduced by =outline-indent=
-At the moment I'm having fun defining transients, I like the grouping of any set of commands together which is presented as a simple text menu and especially those infrequently used and hence forgotten.
-So my idea here is to allow agnostic code folding on spaces and tabs (as my source code is always consistently indentally formatted), based on =outline-mode= along with an =outline-mode= transient menu which will also include extra cursor position folding using =selective-display=
-I could use =outline=indent= to help me out here but I thought as just a general exercise to learn some more elisp and have fun defining a transient (which could be easily turned into an all purpose =outline-mode= transient).  Although I am using the following taken from =outline-indent= to enable the space / tab outline indenting mechanism:
-#+begin_src elisp
-(setq-local outline-regexp (rx bol
-                               (zero-or-more (any " \t"))
-                               (not (any " \t\n"))))
-#+end_src
-
-I'm not too clear as to how much =outline-mode= is generally leveraged in different programming modes, and presumably based on different program specific syntactical structures.  The languages that I mainly use seem to for example define their own navigation system, and straight using =outline-mode= and especially then turning on outline cycling is problematic given the <TAB> use within general source code and hence the outline conflicting binding.
-So given all these thoughts, this is what I have have so far:
-#+begin_src elisp
-(transient-define-prefix my/transient-outlining-and-folding ()
-  "Transient menu for outline-mode."
-  ["Outline Mode Commands"
-   ["Cycle / Folding"
-    ("g" "Cycle" outline-cycle)
-    ("O" "Cycle Buffer" outline-cycle-buffer)
-    ("F" "Global Folding at Point"
-     (lambda () (interactive)
-       (if (eq selective-display (1+ (current-column)))
-           (set-selective-display 0)
-         (set-selective-display (1+ (current-column))))))]
-   ["Visibility"
-    ("o" "Toggle Children" outline-toggle-children)
-    ("h" "Hide Sublevels" outline-hide-sublevels)
-    ("s" "Show All" outline-show-all)
-    ("i" "Hide Body" outline-hide-body)
-    ("e" "Show Entry" outline-show-entry)
-    ("H" "Hide Entry" outline-hide-entry)
-    ("c" "Hide Leaves" outline-hide-leaves)
-    ("k" "Show Branches" outline-show-branches)
-    ("t" "Hide Subtree" outline-hide-subtree)
-    ("S" "Show Subtree" outline-show-subtree)]
-   ["Motion"
-    ("n" "Next Visible Heading" outline-next-visible-heading)
-    ("p" "Previous Visible Heading" outline-previous-visible-heading)
-    ("u" "Up Heading" outline-up-heading)
-    ("f" "Forward Same Level" outline-forward-same-level)
-    ("b" "Backward Same Level" outline-backward-same-level)]
-   ["Structure"
-    ("t" "Promote Heading" outline-promote)
-    ("d" "Demote Heading" outline-demote)
-    ("P" "Move Subtree Up" outline-move-subtree-up)
-    ("N" "Move Subtree Down" outline-move-subtree-down)]
-   ["Edit"
-    ("a" "Add Heading" outline-insert-heading)
-    ("r" "Rename Heading" outline-insert-heading)
-    ("m" "Mark Subtree" outline-mark-subtree)]])
-
-(bind-key* (kbd "C-c o") 'my/transient-outlining-and-folding)
-
-(defun my/prog-folding ()
-  "Enable and configure outline minor mode for code folding.
-
-This function sets up the outline minor mode tailored for
-programming modes based on basic space / tab indentation."
-  (interactive)
-  (setq-local outline-minor-mode-use-buttons nil)
-  (setq-local outline-regexp (rx bol
-                                 (zero-or-more (any " \t"))
-                                 (not (any " \t\n"))))
-  (outline-minor-mode 1))
-
-(add-hook 'prog-mode-hook 'my/prog-folding)
-#+end_src
-
-As you can see, the main transient is globally defined so can be used in anything that has =outline-mode= enable, for example org!
-But sneakily also has "Global Folding at Point" for some cursor position folding.
-Often and when in a source code body I would really like to just get a top level outline of all the functions available, this should be always doable with "Global Folding at Point" for just about any language as long as the cursor is positioned accordingly.  "Cycle Buffer" would mostly perform a similar function but could run into difficulties if newlines were just after function headers.
-Also I often program in Ada and for procedure or function definitions the indent structure is not that compatible with an outline methodology and would start folding local variables and function / procedure bodies separately.  For Ada I would almost always used "Global Folding at Point" and probably I'm sure for some other languages.  Well maybe the transient now caters for most programming folding?
-Now the big question is... will I actually use the above? and then build it into my workflow / muscle memory? I have survived this far without code folding, and annoyingly is my recent development shennanigans in Visual Studio skewing / adjusting my expectations in an IDE?, do I really want this?, is it helpful? who knows, and actually it doesn't matter I have learned much about =outline-mode= regex using rx, transients, e.t.c
-* TODO Native-Compilation-On-Linux :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240720165945-emacs--Native-Compilation-On-Linux
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-07-20 16:59>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240720165945-emacs--Native-Compilation-On-Linux.jpg
-:END:
-
-Compiling Emacs with native compilation on Linux involves several steps, but it can be a worthwhile endeavor if you want to take advantage of the performance improvements offered by native compilation. Native compilation in Emacs uses the `libgccjit` library to compile Emacs Lisp code to native code, which can then be executed directly by the CPU.
-#+hugo: more
-
-Here are the general steps to compile Emacs with native compilation on Linux:
-As I am currently using Arch I shall use the AUR and tailor PKBUILD
-Here is a good post from Prot : https://protesilaos.com/codelog/2022-07-06-build-emacs-arch-linux/ of which most of this post was taken from.
-On Arch we can build custom packages cleanly by writing a PKGBUILD. This is a shell script that fetches the source and prepares it for installation. In the case of Emacs, we do not need to write the entire script ourselves: the community-driven Arch User Repository (AUR) already includes the emacs-git package.
-As we likely want to customise certain aspects of the build, emacs-git should not be installed as-is (and generally one ought to always inspect what they install from the AUR). Instead, we must fetch the PGBUILD source, edit it, and build the package from there. This requires the base-devel package group. The resulting output is a regular package as far as the pacman is concerned.
-We get the build script:
-git clone https://aur.archlinux.org/emacs-git.git/ path/to/emacs-git-aur
-Then we change to the emacs-git-aur directory and visit the PKGBUILD file. It is properly annotated so one must read all the comments carefully to understand what each variable pertains to.
-#+begin_src sh
-JIT="YES"
-PGTK="YES"     # Use native GTK3 build. Supports Wayland, yay!
-GTK3=          # GTK3 old windowing interface.
-XWIDGETS="YES" # Use GTK+ widgets pulled from webkit2gtk. Usable.
-SITTER="YES"   # Use tree-sitter incremental language parsing.
-#+end_src
-
-Now to build the package outright ($ refers to regular user privileges):
-/path/to/emacs-git-aur $ makepkg -siC
-- *-s* (or =--syncdeps=): This flag tells =makepkg= to install any missing dependencies required to build the package. It will use the package manager (usually =pacman=) to find and install these dependencies.
-
-- *-i* (or =--install=): After the package is successfully built, this flag will automatically install the newly built package using =pacman=.
-
-- *-C* (or =--cleanbuild=): This flag tells =makepkg= to remove the existing build directory before building the package. This ensures that the build starts from a clean state, which can help avoid issues related to remnants of previous builds.
-
-the -C is not necessary here, but I added it just to be sure (it is required for clean builds).
-As a final step, makepkg will prompt to install the package and ask to escalate privileges. In case we miss that part, we do not need to restart the whole process. The easier way is to check the directory we are in for a file named emacs-git-29.0.50.157962-1-x86_64.pkg.tar.zst or something like that and run the following (# denotes superuser privileges):
-/path/to/emacs-git-aur # pacman -U emacs-git-29.0.50.157962-1-x86_64.pkg.tar.zst
-The first build will take a long time, especially with native compilation enabled, but subsequent ones shall be faster (I wrote this blog post while waiting for it).
-Rebuilding a package automatically fetches the updates. All we ever need is to re-run makepkg -si (occasionally with -C included). However, as time goes by, we might also have to check the PKGBUILD for updates, such as when new build options are added upstream. No problem! We just git pull from the source we cloned earlier (the https://aur.archlinux.org/emacs-git.git/). Again, the rest is all about scrutinising the PKGBUILD and running makepkg.
-* TODO Native-Compilation-On-Windows :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240720165945-emacs--Native-Compilation-On-Windows
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-07-20 16:59>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240720165945-emacs--Native-Compilation-On-Windows.jpg
-:END:
-
-Compiling Emacs with native compilation on Windows involves several steps, but it can be a worthwhile endeavor if you want to take advantage of the performance improvements offered by native compilation. Native compilation in Emacs uses the `libgccjit` library to compile Emacs Lisp code to native code, which can then be executed directly by the CPU.
-#+hugo: more
-
-Here are the general steps to compile Emacs with native compilation on Windows:
-1. **Install MSYS2**:
-   - Visit the [MSYS2 website](https://www.msys2.org/) and download the installer.
-   - Run the installer and update the package database and base packages by running the following commands in the MSYS2 terminal: ```sh pacman -Syu pacman --noconfirm -Syu # Might be needed to fully update MSYS2 ```
-
-2. **Install Required Packages**: Use the following command to install the necessary packages: ```sh pacman -S base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-libgccjit mingw-w64-x86_64-cmake mingw-w64-x86_64-pkg-config git mingw-w64-x86_64-make ```
-
-3. **Clone the Emacs Repository**:
-   - Navigate to the directory where you want to download Emacs sources in the MSYS2 bash shell, then run: ```sh git clone https://github.com/emacs-mirror/emacs.git cd emacs ```
-
-4. **Configure the Build**:
-   - Create a separate directory for building Emacs (e.g., `build` directory inside the cloned `emacs` directory): ```sh mkdir build cd build ```
-   - Run the configuration script with native compilation enabled: ```sh ../autogen.sh ../configure --with-native-compilation --prefix=/mingw64 ```
-
-5. **Compile and Install Emacs**:
-   - Compile Emacs by running: ```sh make -j$(nproc) ```
-   - Install Emacs to the prefix directory specified during the configuration (in this case, `/mingw64`): ```sh make install ```
-
-6. **Set Up Native Compilation**:
-   - Ensure that the installed Emacs can find the native compiler (`libgccjit`). This usually involves adding the MSYS2 `/mingw64/bin` directory to your PATH environment variable.
-
-7. **Run Emacs**:
-   - You can now run Emacs using the installed executable: ```sh /mingw64/bin/emacs ```
-
-### Additional Notes
-1. **Using GUI Emacs**: If you want to use the GUI version of Emacs, make sure you have installed the necessary GTK packages: ```sh pacman -S mingw-w64-x86_64-gtk3 mingw-w64-x86_64-pango mingw-w64-x86_64-xpm-nox mingw-w64-x86_64-xwidgets ```
-
-2. **Troubleshooting**:
-   - Make sure your environment variables are set correctly, especially PATH.
-   - Keep an eye on the output of each step to catch any errors or missing dependencies.
-
-### Example Emacs Configuration Here's an example `.emacs.d/init.el` configuration to ensure native compilation works correctly once you start Emacs:
-```elisp (setq package-native-compile t) (setq comp-speed 2)
 * TODO Plantuml-Setup-In-Emacs :emacs:2024:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20240421094624-emacs--Plantuml-In-Emacs
@@ -3202,420 +2001,161 @@ There may be feedback from the MELPA maintainers. Be prepared to make necessary 
 
 Once your pull request is approved, the maintainers will merge it into the main MELPA repository. Your package will then become available to users and will be built on a regular basis.
 Remember to keep your package repository well-maintained, as MELPA builds packages directly from the source (assuming from the latest tag). Any changes in your GitHub repository will reflect in the MELPA package after the next build.
-* TODO Magit-Create-And-Publish-Tag :emacs:2024:
+* DONE Stop Going to the Top: isearch-allow-motion in Emacs :emacs:isearch:2026:
 :PROPERTIES:
-:EXPORT_FILE_NAME: 20240113151730-emacs--Magit-Create-And-Publish-Tag
+:EXPORT_FILE_NAME: 20261025153614-emacs--Stop-Going-to-the-Top-isearch-allow-motion
 :EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-01-13 15:17>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240113151730-emacs--Magit-Create-And-Publish-Tag.jpg
+:EXPORT_HUGO_LASTMOD: <2026-10-26 Mon 13:25>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20261025153614-emacs--Stop-Going-to-the-Top-isearch-allow-motion.jpg
 :END:
 
-To create a new tag in your Git repository and link it to GitHub, you can follow these steps directly within Emacs using Magit:
-#+hugo: more
-
-1. Open Magit within Emacs: You can open Magit with the following Emacs command:
-   =M-x magit-status=
-   This brings up the Magit status view for your repository.
-
-2. In the Magit status buffer, hit `t` to interact with tags: This command opens the tagging popup menu.
-
-3. Press `t` to create a new tag: After you hit `t`, Magit will prompt you to enter the name of the new tag.
-
-4. Enter the tag name and hit `RET` (Return/Enter key):
-
-5. Optionally, provide an annotation for the tag '-a': If you're creating an annotated tag, you can type your message. You can finish by typing `C-c C-c` to confirm or `C-c C-k` to cancel.
-
-6. Push the tag to GitHub: Now that you've created a local tag, you may want to push it to GitHub. From the Magit status buffer, press `P` (uppercase) to push.
-
-7. Choose to push a specific tag `T`, then pick the tag you want to push: You'll be prompted to select the remote; typically, this will be `origin` for GitHub.
-
-8. Confirm and complete the push process: Follow the prompts to finish pushing the tag to the remote repository.
-
-9. A zip and tarball seem to be created for the repositories contents.
-
-Here's an example of how some of the Magit commands look like when invoked:
-#+begin_src
-;; Create a new tag
-M-x magit-status
-t         ;; operate on tags
-t         ;; create a new tag
-
-;; Push tags to remote
-P         ;; push
-t         ;; push a specific tag
-#+end_src
-
-Make sure you're connected to the internet, and your Emacs has the necessary permissions to interact with GitHub. Also, ensure that your local Git configuration is set up with the correct GitHub credentials for push operations to work smoothly.
-* TODO Org-To-Epub :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20240102213958-emacs--Org-To-Epub
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2024-01-02 21:39>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20240102213958-emacs--Org-To-Epub.jpg
-:END:
-
-Now I am using e-ink devices a little more I thought it might be interesting to see if I could export my org files to the =epub= format and as my web sites are single org files generated through =ox-hugo= a clear pathway exists by the org export dispatch mechanism.
-#+hugo: more
-
-Firstly install:
-#+begin_src
-(use-package ox-epub)
-#+end_src
-
-I trialled out a =pandoc= workflow but the output was not as consistent as =ox-epub=
-This included:
-#+begin_src bash
-pandoc -o emacs--all-latex.epub emacs--all.tex
-pandoc -o emacs--all.epub emacs--all.org
-#+end_src
-
-and then export by running:
-=(org-export-dispatch)=
-It is bound to C-c C-e.
-[E] Export to Epub [e] As Epub file
-At the moment I am not too fussy initially some of the images that had: =#+attr_html: :width 100%=
-seemed not to format the images very well, they were generally large and offset and looked messy.
-To resolve this I ran =flush-lines= =attr_html: :width 100=
-saved the file and then exported, this took care of most of the images.  Of course the width 100% is more for an html export which =org-export-dispatch= is using at the back end but as =#+attr_html: :class emacs-img= seems to work, probably because it doesn't know how to process this as no *css* is applied and is more for html / hugo export.
-One fix would be to class css define :width 100% and on this export the image width would be ignored.
-* TODO Weight-Extrapolate-Loss :emacs:2024:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20231230132734-emacs--Weight-Extrapolate-Loss
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-12-30 13:27>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20231230132734-emacs--Weight-Extrapolate-Loss.jpg
-:END:
+I have a small ritual when I need to find something in a file: jump to the top with =M-<=, start =C-s=, and type the search string. It works, but it is a little fiddly. The top of the buffer is not where I am, and most of the time I do not actually need to start there. I just want the first match in the file, or I want to search forward from wherever point happens to be.
 
 #+hugo: more
 
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/emacs/20261025153614-emacs--Stop-Going-to-the-Top-isearch-allow-motion.jpg]]
+
+The built-in =isearch-allow-motion= option is kinda useful. It lets the ordinary motion keys =M-<= and =M->= work as match navigation while an isearch is active. Type =C-s=, type the search string, and then press =M-<= to jump to the first occurrence in the buffer or =M->= to jump to the last. The search stays active, so =C-s= and =C-r= keep working from the new position. No trip to the top, no restarting the search.
+
+With =isearch-allow-motion= set to non-nil, isearch intercepts four motion commands and gives them a search-specific meaning:
+
+| Key   | Command               | Default during isearch              | With isearch-allow-motion         |
+|-------+-----------------------+-------------------------------------+-----------------------------------|
+| =M-<= | =beginning-of-buffer= | exits isearch, goes to buffer start | jumps to first match in buffer    |
+| =M->= | =end-of-buffer=       | exits isearch, goes to buffer end   | jumps to last match in buffer     |
+| =C-v= | =scroll-up-command=   | exits isearch, scrolls forward      | jumps to first match after window |
+| =M-v= | =scroll-down-command= | exits isearch, scrolls backward     | jumps to last match before window |
+
+The search string is not changed, and you are still in isearch after the jump. That is the whole trick: the motion command has been repurposed from "move the buffer" to "move through the matches", but only while you are searching.
+
+The option has been in Emacs since 28.1, so I would say generally there is probably a high chance you already have it.
+
+Add one line in your init file:
+
 #+begin_src elisp
-(defun subtract-weight (weight-str avg-loss)
-  "Subtract AVG-LOSS pounds from WEIGHT-STR given in 'stones:pounds' format."
-  (let* ((stones-pounds (split-string weight-str ":"))
-         (stones (string-to-number (car stones-pounds)))
-         (pounds (string-to-number (cadr stones-pounds)))
-         (total-pounds (+ pounds (* stones 14)))      ;; Convert stones to pounds
-         (new-total-pounds (- total-pounds avg-loss)) ;; Subtract weight loss
-         (new-stones (truncate (/ new-total-pounds 14))) ;; Calculate new stones
-         (new-pounds (mod new-total-pounds 14)))      ;; Calculate remaining pounds
-    (format "%d:%d" new-stones new-pounds)))         ;; Format new weight
-
-(defun extrapolate-weight-loss (num-weeks)
-  "Extrapolate weight loss for NUM-WEEKS using the last 'av/pd' value in the org-table."
-  (interactive "p")
-  (save-excursion
-    (let ((last-avg-loss 2.9)
-          (last-date "")
-          (week 0)
-          (next-date ""))
-      (print num-weeks)
-      (when (org-table-p)
-        (goto-char (org-table-end))
-        ;; Find the last date and week number
-        (search-backward-regexp "|\\s-?\\([0-9]+\\)\\s-?|\\s-?<\\([0-9-]+\\)" nil t)
-        (setq week (string-to-number (match-string 1)))
-        (setq last-date (match-string 2))
-        (setq last-weight "16:10")
-
-        (goto-char (org-table-end))
-
-        ;; Loop for num-weeks to generate new lines
-        (dotimes (i num-weeks)
-          (setq next-date
-                (format-time-string "<%Y-%m-%d %a>"
-                                    (time-add (org-time-string-to-time last-date)
-                                              (days-to-time (+ (* i 7) 7))))) ;; add 7 days per week
-          (setq week (+ week 1))
-          (insert (format "| %d | %s | %s | | | | | | |\n"
-                          week next-date (subtract-weight last-weight (* (+ i 1) last-avg-loss)))))
-        )
-      )
-    )
-  (org-table-align))
+(setq isearch-allow-motion t)
 #+end_src
-* TODO Financial-Subscriptions-Elisp :emacs:2024:
+
+The top-of-buffer ritual was not a huge cost, but it was a repeated one. I do this dozens of times a day, and every time I did it I was leaving the place I wanted to search from, just to make the first match the first match. =isearch-allow-motion= lets me keep my starting point and still get the first or last match when I need it.
+
+It is a small, built-in option, not a new package or a new search interface. It just teaches a few familiar keys to do the obvious thing while isearch is active. If you are on Emacs 28.1 or later, give it a try!
+* DONE Org Speed Keys: Making t Land After the TODO Keyword :emacs:org:2026:
 :PROPERTIES:
-:EXPORT_FILE_NAME: 20231230132334-emacs--Financial-Subscriptions-Elisp
+:EXPORT_FILE_NAME: 20261008110300-emacs--Org-Speed-Keys-Making-t-Land-After-the-TODO-Keyword
 :EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-12-30 13:23>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20231230132334-emacs--Financial-Subscriptions-Elisp.jpg
+:EXPORT_HUGO_LASTMOD: <2026-10-08 Thu 11:03>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20261008110300-emacs--Org-Speed-Keys-Making-t-Land-After-the-TODO-Keyword.jpg
 :END:
 
-Description of how I keep track of my subscriptions while using elisp to sum them up, look at *misc-subs.org*
-#+hugo: more
+I use =org-use-speed-commands= all the time when navigating and performing actions on org headlines, but I think I have found a friction point, something that just feels a little off.
 
-#+begin_src elisp
-(let ((sum 0))
-  (save-excursion
-    (goto-char (point-min))
-    (while (and (re-search-forward "\\([0-9]+\\.[0-9]+\\)" nil t)
-                (not (save-excursion (beginning-of-line) (looking-at-p ": Sum:" ))))
-      (setq sum (+ sum (string-to-number (match-string 1))))))
-  (message "Sum: %.2f" sum))
-#+end_src
-* TODO Configuring-Ada-In-Emacs :noexport:emacs:2023:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20230827133556-emacs--Configuring-Ada
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-08-27 13:35>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20230827133556-emacs--Configuring-Ada.jpg
-:END:
-
-This is a guide to setting up emacs as a software development environment using the programming language Ada and the steps I took to achieve an acceptable solution.
-#+hugo: more
-
-** Specs
-
-Linux 6.4.12-arch1-1 swayfx bash 5.1.16
-** Requirements
-
-In very simple terms what I require for any software development environment are as follows:
-1. syntax highlighting
-2. build system
-3. quick xref
-4. debugging
-
-** A little history
-
-The original ada-mode that came with emacs has now been removed (emacs version 28?) and you are generally expected to install the elpa ada-mode from AdaCore (version 8.0.5)
-However I have never got this to work as it requires extra build steps which I have never got to successfully complete.
-At work I use the =old-ada-mode= (version 4.1 - elpa / melpa) which was not the original built-in but a major rewrite of the file packaged with Emacs-20 (assuming it was the one mentioned above) this works well especially regarding xref, it uses its own propriety version, namely =ada-find-references= and uses =gnatfind= from the .ali information files generated by an Ada build.  At work I can get this to work and this may be due to =gnat find= being used which doesn't seem to be present on my arch machine, has the latest version of gnat deprecated gnat find?
-On my arch machine installing =gcc-ada= gave me some gnat tools but strangely not gnatfind and not gprbuild (maybe understandable).
-** gprbuild
-
-My next step was to install gprbuild, this was a simple build from the AUR of gprbuild-bootstrap which builds gprbuild using gprbuild! (I tried just the gprbuild package but of course I didn't have gprbuild installed to build it!).  So a gprbuild could now build my ada projects but old-ada-mode still didn't work as it couldn't find gnatfind.
-After this it is likely that you are going to have to setup the following:
-/usr/share: lrwxrwxrwx 1 30 Sep 30 08:58 gprconfig -> /opt/GNAT/2021/share/gprconfig
-now the old-ada-mode works!
-** xref
-
-I tried to find gnatfind and gnatxref but this was not easy, the only way was to seemingly download the AdaCore community edition into /home/jdyer/Downloads/gnat-2021-20210519-x86_64-linux-bin from https://www.adacore.com/download although I'm not too sure if they are doing this anymore.  Ironically this also installed gprbuild!, but I would rather use AUR install it.
-Even with gnatfind visible the old-ada-mode xref still didn't work as the -P<project name> possibly seems to be deprecated? so how do I know where the included folders are?, well I gave up for now and had another look at etags.
-** TAGS
-
-Again I have never got etags to work under emacs for Ada xref (works with C and C++), I run the following:
-#+begin_src
-(shell-command (concat "etags \"" file "\"g --append -o \"/home/jdyer/examples/TAGS\""))
-#+end_src
-
-it can never find any reference even though the inspection of TAGS seems to list the references desired.
-Will ctags do any better, well I ran the following command:
-#+begin_src
-ctags -e -R .
-#+end_src
-
-and this did no better.
-** Eglot / LSP
-
-Mmmmm, right what's next, I know I am running emacs version 29.1 so what about eglot?
-So open up an ada file and M-x eglot.  Aha I have some level of success with xref but it seems to only jump to a reference file that is in the same directory.  There is an error in the eglot events buffer:
-:severity 1 :source "project" :message No project found in root directory. Please create a project file and add it to the configuration.")]))
-I'm guessing severity 1 is quite serious!
-I have a feeling that eglot is only finding a project file if it is in the local directory, so I will add =ede-new= to the project top level which creates a Project.ede file but also updates the ede-project-directories variable which seems pretty important.
-(setq-default ede-project-directories '("/home/jdyer/examples/gnat-examples/menace"))
-So to get eglot to work for ada we need a Project.ede residing in any one of the ede-project-directories
-Unfortunately I have now noticed that emacs gets stuck when starting up and on some trial and error investigation it is related to the contents of .emacs.desktop of an ada file.  On a desktop-create-buffer for an ada file if the major mode is set to ada-mode or even ada-ts-mode then it gets stuck, if I replace it with fundamental-mode or even c-mode emacs loads normally.
-** Treesitter
-
-Well lets ignore that for the moment and focus on treesitter, now it is backed into emacs 29.1 I would like to try it out.  old-ada-mode works well enough for me regarding syntax highlightling and anything else I want from it but I want to see if treesitter offers me anything else.
-Installing was pretty straightforward, first we need to install the grammar which involves setting:
-#+begin_src elisp
-(setq treesit-language-source-alist
-      '(
-        (ada "https://github.com/briot/tree-sitter-ada")
-        )
-#+end_src
-
-and then running =treesit-install-language-grammar=
-the =ada-ts-mode= isn't built into emacs but can be retrived from melpa with:
-#+begin_src elisp
-(use-package ada-ts-mode)
-#+end_src
-
-the next thing to do is to make sure =ada-ts-mode= is activated whenever an Ada file is loaded and this can be achieved by the following:
-#+begin_src elisp
-(cl-loop for ext in '("\\.gpr$" "\\.ada$" "\\.ads$" "\\.adb$")
-         do (add-to-list 'auto-mode-alist (cons ext 'ada-mode)))
-#+end_src
-
-Now you will notice I have activated the old ada-mode but I think for the moment this makes more sense for when I might want to return to my tried and tested old-ada-mode but with all things treesitter I can map major modes so for the moment I will map as follows:
-#+begin_src elisp
-(setq major-mode-remap-alist
-      '(
-        (ada-mode . ada-ts-mode)
-        )
-      )
-#+end_src
-
-Now when I open an ada source file ada-ts-mode is loaded and I get some nice syntax highlighting!
-The only thing at the moment I am not too sure about is the indentation and seems to be using the relative-indent function which is pretty much the default and indents to the next space / indent, but this is probably more about the melpa ada-ts-mode than anything else and of course treesitter and emacs is quite a new thing and I'm sure that things will mature in the future.
-** Conclusion
-
-So where does this leave me regarding modifying, building and having an effectively fast ada workflow?, well my plan thus far is...
-1. *syntax highlighting* - Use the =old-ada-mode= of which I now have a linked repos as it doesn't really seem to be available anywhere
-2. *build system* - Install gprbuild-bootstrap on arch to get gprbuild
-3. *quick xref* - Make sure I set up ede projects and emacs variables accordingly and use =eglot= for xref as I can't seem to easily get the old gnatfind related functionality to work
-4. *debugging* - Oh and regarding debugging that is pretty easy, just use gdb!
-
-** TO DO
-
-1. Fix the save-desktop ada*-mode issue decided to remove the save-desktop functionality so far to see if I can get on with it.
-
-2. Try new ada-mode again from AdaCore Tried again, not sure if I need to build anything but doesn't work anyway due to gnatcoll, and the indentation raises an error: [server-reply] (id:9) ERROR Mon Aug 28 09:41:12 2023: (:jsonrpc "2.0" :id 9 :error (:code -32603 :message ""))
-   also if elgot isn't running I get: jsonrpc-error: jsonrpc-error: "No current JSON-RPC connection", (jsonrpc-error-code . 32603), (jsonrpc-error-message . "No current JSON-RPC connection") [2 times]
-   and indentation doesn't work!
-
-3. Going back to =old-ada-mode=
-* TODO Using visual-fill-column for individual org files :org:noexport:emacs:2023:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20230520111851-emacs--Using-visual-fill-column
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-05-20 12:50>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20230520111851-emacs--screenshot.jpg
-:END:
-
-I have been using =visual-fill-column= for a little while now and I think I prefer it to =olivetti=, it is leveraging my =fill-column= variable and is simpler to set up.
-#+hugo: more
-
-The only additional config I require is the following:
-#+begin_src elisp
-(setq-default visual-fill-column-center-text t)
-#+end_src
-
-I set =visual-fill-column= typically globally, as it provides a centered appearance for files on a single window and a split window would not change the aesthetics even with the mode enabled.
-However after a while I began facing certain problems, particularly while altering source code files, as the limited formatting felt constrictive and I felt the urge to truncate lines in such instances.
-For the time being, I have concluded that =visual-fill-column= is only necessary for org files and I simply prefer to manage the =fill-column= for each individual file.
-So I decided on a two pronged approach.
-All my org files are in a single directory, so firstly I created a =.dir-locals.el= file by running =add-dir-local-variable= selecting =org-mode=, =eval= and the appropriate elisp, to give me:
-#+begin_src elisp
-((org-mode . ((eval . (visual-fill-column-mode t)))))
-#+end_src
-
-org files in a specified directory are now centered in a window based on my =fill-column= setting.
-However some org files tend naturally to a smaller width than others and I would like more control over the =fill-column= for each individual file.
-To achieve this I set up some file local variables using the snippet below inserted at the bottom of each org file:
-#+attr_org: :width 300px #+attr_html: :width 300px [[file:static/emacs/20230520111851-emacs--screenshot.jpg]]
-or the option is to modify the first line of the org file as thus:
-#+begin_src
--*- mode: org; fill-column: 90; -*-
-#+end_src
-* TODO Aligning Columns In Text Table :noexport:emacs:2023:
-:PROPERTIES:
-:EXPORT_FILE_NAME: 20230503201715-emacs--Aligning-Columns-In-Text-Table
-:EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-05-03>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20230503201715-emacs--Aligning-Columns-In-Text-Table.jpg
-:END:
+When the point is on =*= and then you press the key =t=, it calls =org-todo= via =org-self-insert-command=. Fast, but the feel is off, the point stays on the stars, so I have to move right before I can type the headline.
 
 #+hugo: more
 
-#+begin_src
-(defun rtest ()
-  ""
-  (interactive)
-  (align-regexp
-   (region-beginning) (region-end)
-   ":\\(\\s-*\\)"
-   1 5 nil)
-  )
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/emacs/20261008110300-emacs--Org-Speed-Keys-Making-t-Land-After-the-TODO-Keyword.jpg]]
 
-1,2,3
-12,13,14
-100,101,102
+The reason is in =org-todo= itself. It has a cursor fixup that parks point just after the keyword, but only when point is /not/ at beginning of line. Speed keys by definition run at beginning of line (=org-speed-command-activate= requires =(bolp)=), so the fixup never fires for exactly the keys that would benefit most.
 
-Fred (123) (456-7890
-Alice (123)   (456-7890
-Mary-Anne (123) (456-7890
-Joe (123)  (456-7890
+There is no custom option for it, so I added a small =:after= advice:
 
-----------------------------------------
--- compiler:    gnat
--- date:  10:10
--- langage:    host
-----------------------------------------
+#+begin_src elisp
+(defun my/org-todo-stop-after-keyword (&rest _)
+  "Move point to just after TODO keyword when `org-todo' leaves it at BOL.
+Speed command `t' (via `org-self-insert-command') runs with point at
+beginning of headline, where `org-todo' skips its cursor fixup."
+  (when (and (bolp) (org-at-heading-p))
+    (when (looking-at org-todo-line-regexp)
+      (goto-char (or (match-end 2) (match-end 1)))
+      (when (looking-at " ") (forward-char 1)))))
+(advice-add 'org-todo :after #'my/org-todo-stop-after-keyword)
 #+end_src
-* TODO Emacs As Client Server :noexport:emacs:2023:
+
+Now =* Test= with point on =*= plus =t= becomes =* TODO Test= with point on =Test=, ready to type. Same for cycling =* TODO= to =* DONE=.
+
+Small change, but speed keys finally feel like they finish the job instead of leaving me parked on the margin!
+* DONE Copy Only What You See: Teaching M-w a Prefix Argument :emacs:org:2026:
 :PROPERTIES:
-:EXPORT_FILE_NAME: 20230501110914-emacs--Emacs-As-Client-Server
+:EXPORT_FILE_NAME: 20260924135500-emacs--Copy-Only-What-You-See-Teaching-M-w-a-Prefix-Argument
 :EXPORT_HUGO_SECTION: emacs
-:EXPORT_HUGO_LASTMOD: <2023-05-01>
-:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20230501110914-emacs--Emacs-As-Client-Server.jpg
+:EXPORT_HUGO_LASTMOD: <2026-09-24 Thu 13:55>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260924135500-emacs--Copy-Only-What-You-See-Teaching-M-w-a-Prefix-Argument.jpg
 :END:
 
-Just a reminder on how to set up emacs client server, I have tried this in the past but never really had any success there is usually a conflict somewhere with save.desktop and the fonts / frames e.t.c
+Select a region in a folded Org buffer, press =M-w=, and you get more than you bargained for: the kill ring receives the hidden text as well. Folding is only a display trick - the text is still in the buffer, and =kill-ring-save= dutifully copies every character between the region boundaries, ellipsis and all. Paste that into an email or a chat and the hidden notes come along for the ride.
+
+The fix, in my config, is a prefix argument: =C-u M-w= copies only the visible text of the region, leaving everything folded or hidden behind. Plain =M-w= is unchanged.
+
 #+hugo: more
 
-To run the server :
-#+begin_src bash
-emacs --daemon
-emacs --bg-daemon
-emacs --fg-daemon
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/emacs/20260924135500-emacs--Copy-Only-What-You-See-Teaching-M-w-a-Prefix-Argument.jpg]]
+
+I have been a fan of =org-copy-visible= ever since I discovered it works outside Org - back in 2023 I was using it in =dired= with =dired-hide-details-mode= to copy just the filenames. The only friction was having to remember =M-x org-copy-visible= instead of my muscle-memory =M-w=. So I taught my existing =my/kill-ring-save= wrapper a another trick: hand it a prefix argument and it copies only the visible text.
+
+=M-w= has been remapped to a small wrapper for a while, mainly so that pressing it with no active region copies the current line. The new version forwards the prefix argument into a second branch:
+
+#+begin_src elisp
+(defun my/kill-ring-save (beg end &optional copy-visible)
+  "Save the region to the kill ring.
+With a prefix argument, copy only the visible text between BEG
+and END, skipping folded or hidden text, like `org-copy-visible'."
+  (interactive (if (use-region-p)
+                   (list (region-beginning) (region-end) current-prefix-arg)
+                 (list (line-beginning-position)
+                       (line-beginning-position 2) current-prefix-arg)))
+  (if copy-visible
+      (org-copy-visible beg end)
+    (kill-ring-save beg end)))
+    
+(global-set-key [remap kill-ring-save] 'my/kill-ring-save)
 #+end_src
 
-then connect using
-#+begin_src bash
-/usr/bin/emacsclient --alternate-editor= --create-frame %F
-emacsclient -a -c
-#+end_src
+=[remap kill-ring-save]= keeps =M-w= working everywhere.
 
-On first running up from the command line to connect to the server the font was incredibly small this was due to me using:
-=(set-frame-font "Hack Nerd Font Mono 13" nil t)=
-so I changed it to:
-=(add-to-list 'default-frame-alist '(font . "Hack Nerd Font Mono 13"))=
-not sure why this is the case but it works!
-I can put =emacs --daemon= in my startup.sh file where all my general startup programs go but I wanted to created a systemd service.
-Su as root using =find-file= /sudo:: navigate to /etc/systemd/system and create an emacs.service copying an example from /usr/share/emacs/28.2/etc then run:
-#+begin_src bash
-sudo systemctl enable emacs.service
-sudo systemctl start emacs.service
-#+end_src
+So why org-copy-visible?, I could have written my own invisible-text walker, but =org-copy-visible= already is one and it ships with Emacs!
+* DONE Emacs 31 Does Git Worktrees Natively: How My vc Setup Compares :emacs:vc:git:worktree:2026:
+:PROPERTIES:
+:EXPORT_FILE_NAME: 20260907140012-emacs--Emacs-31-Native-Git-Worktrees-vs-My-vc-Setup
+:EXPORT_HUGO_SECTION: emacs
+:EXPORT_HUGO_LASTMOD: <2026-09-14 Mon 13:42>
+:EXPORT_HUGO_CUSTOM_FRONT_MATTER+: :thumbnail /emacs/20260907140012-emacs--Emacs-31-Native-Git-Worktrees-vs-My-vc-Setup.jpg
+:END:
 
-and the desktop files can be used in this folder too if the operating system hasn't created them correctly in linux, the key is that the =emacs.desktop= has some form of =emacsclient= command.
-Couldn't really get it to work with a root emacs.service but there is a user one that comes with emacs as in the article: https://emacsredux.com/blog/2020/07/16/running-emacs-with-systemd/
-#+begin_quote
-I’ve noticed, however, that Emacs 26.1 bundles a systemd unit, so it’s now trivial to control your Emacs daemon with systemd. It all boils down to running this command:
-$ systemctl --user enable --now emacs Run this command with your regular user (or whatever user account you want to be running Emacs). Don’t run it as root, though! You’ll get a message that the unit file was copied to /usr/lib/systemd/user/emacs.service and you can examine it if you’re curious:
-[Unit] Description=Emacs text editor Documentation=info:emacs man:emacs(1) https://gnu.org/software/emacs/
-[Service] Type=simple ExecStart=/usr/bin/emacs --fg-daemon ExecStop=/usr/bin/emacsclient --eval "(kill-emacs)" Environment=SSH_AUTH_SOCK=%t/keyring/ssh Restart=on-failure
-[Install] WantedBy=default.target Pretty straightforward.
-At this point your Emacs daemon is up and you can connect to it using both terminal clients (emacsclient -t) and GUI clients (emacsclient -c). You might also want to create some desktop icon that runs emacsclient -c, instead of emacs. You
-#+end_quote
+Well this is awkward timing. No sooner had I finished bolting worktree management onto built-in =vc= than I installed the bleeding edge and found Emacs 31 went and did it properly. Right there in the 31 NEWS: a whole =C-x v w= working-tree map. So before I get too attached to my own code I thought I had better do an honest head-to-head. Verdict up front: I am keeping mine, with one key moved. Here is why.
 
----
-To disable the systemd service for Emacs that was enabled by running the command "systemctl --user enable --now emacs", you can run the following command:
-systemctl --user disable emacs
-This will disable the service from starting automatically at boot time.
-You can also stop the service immediately by running the command:
-systemctl --user stop emacs
-This will stop the service immediately without disabling it from starting at boot time.
-* TODO Emacs email mu4e :noexport:emacs:
+#+hugo: more
 
-mu init --maildir=/home/jdyer/Maildir --my-address='james@dyerdwelling.family'
-Also run the above command if mu has upgraded
-mbsync -c ~/.mbsyncrc -a gpg2 -c captainflasmr.acc
-As a note if I ever get some kind of defvar-1 error when opening mu4e then the install of mu is probably incorrect so from the linux package manager just uninstall and then reinstall!
-** lock file issues
+#+attr_org: :width 300px
+#+attr_html: :width 100%
+[[file:static/emacs/20260907140012-emacs--Emacs-31-Native-Git-Worktrees-vs-My-vc-Setup.jpg]]
 
-if you get the following error:
-#+begin_src
-error in process sentinel: mu4e--server-sentinel: mu database is locked by another process
-error in process sentinel: mu database is locked by another process
-#+end_src
+First, what 31 actually ships under =C-x v w=:
 
-Then remove ~/.cache and run the init command above.
-or :
-[AI]: The mu database is locked by another process error in emacs mu4e can occur if another process is using the mu database. To resolve this error, you can follow these steps:
-1. Close all mu4e buffers and restart the mu4e server by typing M-x mu4e-quit and then M-x mu4e.
+- =w c= (=vc-add-working-tree=) prompts for a directory, then a branch, but you have to create a branch for yourself, where as my version and also Magit ask for the name of the branch to create, as when creating a new worktree, wouldn't you always want to create a branch?  Also with the built-in there is no placeholder initial name, with something involving the branch name, so this command currently feels a little disjointed.
+- =w w= (=vc-switch-working-tree=) jumps to the /same file/ in another tree. Lovely idea, completely different from my switch-to-=vc-dir= and I'm not quite sure if I really care about switching file contexts, I think I just really want to jump to the top level =vc-dir=
+- =w k= (=vc-kill-other-working-tree-buffers=) kills buffers visiting this file elsewhere. Read that twice: it does /not/ delete the tree, despite the letter.  So these commands are really very much file-centric.  Again I would rather this delete the worktree.
+- =w s= (=vc-working-tree-switch-project=) is =project-switch-project= limited to trees sharing the same backing repo, with a matching =project-find-matching-buffer= helper for hopping between same-named files, for this I would probably generally be more specific.
+- =w a= and =w A= (=vc-apply-to-other-working-tree= and =vc-apply-root-to-other-working-tree=) copy a fileset's changes - or the whole tree's - into another tree, and with a prefix argument /move/ them. This is the Transplant mechanic and it is genuinely something mine cannot do, do I need it, not sure, but I have logged it into my noggin.
+- =w x= (=vc-delete-working-tree=) deletes the directory outright (to trash) and prunes. No =--force= dance because there is no =git worktree remove= involved at all, which also means it works on ancient gits.
+- =w R= (=vc-move-working-tree=) relocates, and the implementation is cleverer than mine: on recent git it renames the directory and runs =worktree repair=, which means it can even move the /main/ tree, something plain =git worktree move= flatly refuses. Older gits fall back through =worktree move= to a clean version error.  A little on =git worktree repair=, the .git file contains a repo reference and is backtraced through the original repo, the repair just reset both aspects which is very useful when moving worktrees around and also in that small case where you are running a shared folder repo over SMB, to get the worktree to work in both linux and maybe a host on windows!!
 
-2. If the error persists, you can try killing the process that is using the mu database. To do this, type M-x list-processes, find the process with the mu command and then type M-x kill-process.
+Now the head-to-head, feature by feature. Creating: theirs prompts bare directory then branch to use, but the branch must already be created, mine offers a =project-branch= sibling default and lands you in =vc-dir=.
 
-3. Another option is to manually delete the lock file that is causing the issue. To do this, go to your mu database folder (e.g. ~/.mu) and delete the file named ".mu/xapianlock".
+Switching: theirs is file-grained, mine is status-buffer-grained - complementary, not competing. Listing: theirs has no list command at all beyond completion prompts (though the backend exposes =vc-git-known-other-working-trees= for lisp), while my =Z l= buffer stays.
 
-4. Finally, if none of the above steps work, you can try rebuilding your mu database by typing M-x mu4e-update-index. This will recreate the database from scratch and should resolve any lock-related issues.  mu init --maildir=/home/jdyer/Maildir --my-address='james@dyerdwelling.family'
-error: Unable to get write lock on /home/jdyer/.cache/mu/xapian: already locked Perhaps mu is already running?  I removed : /home/jdyer/.cache/mu/xapian/flintlock well what worked for me was the following: lsof 2>/dev/null | grep xapian mu 1617 jdyer mem REG 259,5 2033720 539122749 /usr/lib/libxapian.so.30.12.3 mu 1617 jdyer 4w REG 259,5 0 367982026 /home/jdyer/.cache/mu/xapian/flintlock mu 1617 jdyer 5u REG 259,5 352256 365231823 /home/jdyer/.cache/mu/xapian/docdata.glass mu 1617 jdyer 6u REG 259,5 1449984 367982028 /home/jdyer/.cache/mu/xapian/termlist.glass mu 1617 jdyer 7u REG 259,5 10919936 365231824 /home/jdyer/.cache/mu/xapian/position.glass mu 1617 jdyer 8u REG 259,5 4554752 367982029 /home/jdyer/.cache/mu/xapian/postlist.glass and then kill the process kill -9 1617 and restart emacs
-* TODO Emacs Theme Editor
+Pruning: no built-in command, mine stays. Moving: theirs is strictly better, full stop.
 
-https://emacsfodder.github.io/emacs-theme-editor/
+Deleting: theirs is safer on old gits and trashes instead of destroying; mine understands =--force= and rescues a =vc-dir= sitting inside the dead tree.
+
+So much for behaviour; now keys, because this is where it bit me. My maps live on =Z= (worktrees, Magit-style). Against 31's =C-x v w= map: =w k= kills buffers where mine removes trees, and =w s= switches projects where mine opens =vc-dir= - same letters, different continents. That settled it: the =Z= prefix stays, precisely /because/ =w= is now taken with conflicting semantics, and note =vc-dir= itself has no built-in worktree keys at all, so =Z= there is uncontested territory.
+
+What I am stealing, or at least circling: the prune-before-listing habit is obviously right, the trash-first delete is kinder than =--force= bravado, and the repair-based move handling the main tree is something =git worktree move= simply cannot do. The changeset transplant (=w a=) is the one I may just use as-is rather than reimplement - some things are better borrowed than rebuilt. What I am not giving up: the =vc-dir=-first workflow, the sibling defaults, the list buffer.
 * DONE Git Worktrees Without Leaving Built-in VC :emacs:vc:git:worktree:2026:
 :PROPERTIES:
 :EXPORT_FILE_NAME: 20260905090959-emacs--Git-Worktrees-and-Branch-Surgery-in-Built-in-VC
