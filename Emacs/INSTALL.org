@@ -317,6 +317,45 @@ emacs --version
 The installed binary is =~/.local/bin/emacs=.  Add that directory to
 =PATH= in your shell profile.
 
+* Optional: portable james binaries
+
+The =dist/= directory contains portable builds of =james=, the small
+terminal editor from =/home/jdyer/source/repos/james=.  The current set is
+*0.88.0*, built with Zig 0.16.0; the older 0.82.0 archives are retained
+alongside it.
+
+| Platform              | Archive                                  |
+|-----------------------+------------------------------------------|
+| Linux x86_64 (musl)   | =james-0.88.0-linux-x86_64.tar.gz=       |
+| Linux x86 (musl)      | =james-0.88.0-linux-x86.tar.gz=          |
+| Linux aarch64 (musl)  | =james-0.88.0-linux-aarch64.tar.gz=      |
+| macOS Intel           | =james-0.88.0-macos-x86_64.tar.gz=       |
+| macOS Apple Silicon   | =james-0.88.0-macos-aarch64.tar.gz=      |
+| FreeBSD x86_64        | =james-0.88.0-freebsd-x86_64.tar.gz=     |
+| FreeBSD x86           | =james-0.88.0-freebsd-x86.tar.gz=        |
+| Windows x86_64        | =james-0.88.0-windows-x86_64.zip=        |
+| Windows x86           | =james-0.88.0-windows-x86.zip=           |
+
+The Unix archives contain a top-level =james-0.88.0-<label>/bin/james=;
+the Windows zips contain =bin/james.exe= and a matching =james.lnk=.
+
+#+begin_src sh
+cd /path/to/this/directory
+tar -xzf dist/james-0.88.0-linux-x86_64.tar.gz -C /tmp
+/tmp/james-0.88.0-linux-x86_64/bin/james
+#+end_src
+
+=james= is a terminal UI; run it from a terminal.  The Linux builds are
+statically linked against musl, so they do not depend on the target's
+glibc version.
+
+Verify the portable set:
+
+#+begin_src sh
+cd /path/to/this/directory/dist
+sha256sum -c SHA256SUMS
+#+end_src
+
 * Rollback
 
 The Emacs pack includes =rollback.sh=.  Run it from the extracted toolkit
