@@ -1,0 +1,450 @@
+#+title: Offline Emacs 31.1 + Language Tools — Installation Guide
+#+author: James Dyer
+#+date: 2026-11-11
+#+options: toc:2 num:nil
+#+startup: overview
+
+* Overview
+
+This directory is a self-contained offline deployment kit for GNU Emacs
+31.1 on Linux x86_64.  It contains two archives:
+
+1. *The Emacs toolkit* — Emacs 31.1 source, a 46-package ELPA mirror, the
+   Emacs-vanilla and Emacs-DIYer configs, local packages, starter snippets,
+   the basic tools, and the install/rollback scripts.
+2. *The language-server bundle* — JDTLS, netcoredbg, Ada Language Server,
+   buf, Kotlin Language Server, TypeScript/TypeScript Language Server
+   tarballs, exiftool, and the Java debug adapter JAR.
+
+Neither archive needs network access on the target machine.  The only
+things you may still need from the target's own offline repositories are
+language runtimes (Java, Python 3, Node/npm, .NET) and, if you rebuild
+Emacs itself, the C build dependencies.
+
+* Files in this directory
+
+| File                                                        | Size  | Purpose                                      |
+|-------------------------------------------------------------+-------+----------------------------------------------|
+| =emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309.tar.xz= | 95 MB | Emacs 31.1 + config + ELPA mirror + source    |
+| =linux-tools-offline-20261111T082538.tar.gz=                 | 279 MB | Language servers, debug adapters, exiftool     |
+| =SHA256SUMS=                                                 | small | SHA-256 checksums for both archives           |
+| =INSTALL.org=                                                | this  | This guide                                    |
+
+Verify both archives before copying them to the target:
+
+#+begin_src sh
+cd /path/to/this/directory
+sha256sum -c SHA256SUMS
+#+end_src
+
+Expected output ends with =OK= for both files.
+
+* Requirements on the target
+
+** Hardware and OS
+
+- Linux x86_64.
+- About *1.5 GB free* if you keep both archives, extract the Emacs pack,
+  and install the language tools.  Allow more if you keep the language
+  bundle's extracted archives after installation.
+- =bash=, =tar=, =xz=, =gzip=, =coreutils=.
+
+** Emacs
+
+The toolkit is built for *GNU Emacs 31.1*.  You can either:
+
+- use an existing Emacs 31.1 binary, or
+- build Emacs 31.1 from the source tarball included in the Emacs pack
+  (see [[*Rebuilding Emacs 31.1 from the bundled source]]).
+
+The configuration also runs on Emacs 29/30, but 31.1 is the tested target.
+
+** Language runtimes (only for the language-server bundle)
+
+| Runtime        | Needed by                                      |
+|----------------+------------------------------------------------|
+| =java= 21+     | JDTLS, Kotlin Language Server                  |
+| =python3=      | JDTLS =bin/jdtls= launcher                     |
+| =node= / =npm= | Installing the bundled TypeScript tarballs     |
+| =.NET SDK=     | Optional =csharp-ls= (not bundled)             |
+| =perl=         | exiftool                                       |
+| =unzip=        | Only while running the language-tools installer |
+
+These runtimes are *not* in either archive; install them from the target's
+offline package repository first.
+
+* Quick start
+
+#+begin_src sh
+cd /path/to/this/directory
+sha256sum -c SHA256SUMS
+
+# 1. Emacs toolkit
+tar -xJf emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309.tar.xz
+cd emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309
+./setup.sh
+cd ..
+
+# 2. Language servers (optional, but recommended for coding)
+tar -xzf linux-tools-offline-20261111T082538.tar.gz
+cd linux-tools-offline-20261111T082538
+./install-offline.sh
+#+end_src
+
+Then start Emacs and confirm the offline mirror is active:
+
+#+begin_src sh
+emacs --version
+emacs --batch -l "$HOME/.emacs.d/init.el" \
+  --eval '(message "emacs=%s mirror=%s" emacs-version my/offline-packages-dir)'
+#+end_src
+
+The message should report =emacs=31.1= and a mirror directory under
+=$HOME/elpa-mirror-emacs-31.1-...=.
+
+* Installing the Emacs toolkit
+
+** Step 1 — verify and extract
+
+#+begin_src sh
+cd /path/to/this/directory
+sha256sum -c SHA256SUMS
+tar -xJf emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309.tar.xz
+cd emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309
+#+end_src
+
+The archive expands to a single top-level directory with the same name.
+
+** Step 2 — inspect before installing (optional)
+
+#+begin_src sh
+less MANIFEST.txt
+less PACKAGES.txt
+ls -lah
+#+end_src
+
+=PACKAGES.txt= lists the 46 packages in the mirror.  =MANIFEST.txt= records
+the build provenance and file inventory.
+
+** Step 3 — run the installer
+
+#+begin_src sh
+./setup.sh
+#+end_src
+
+If the executable bit was lost in transit:
+
+#+begin_src sh
+bash setup.sh
+#+end_src
+
+=setup.sh= does the following:
+
+1. Creates =~/.emacs.d= if needed.
+2. Backs up existing =init.el=, =early-init.el=, =abbrev_defs=, starter
+   files, =elpa=, =Emacs-vanilla=, =Emacs-DIYer=, =local-packages= and
+   =docs= into =~/.emacs.d/.backups/<STAMP>/=.
+3. Moves any existing =~/elpa-mirror-emacs-*= extraction into the same
+   backup directory.
+4. Extracts the new ELPA mirror into =$HOME=.
+5. Installs the literate configs, =local-packages=, =init.el=,
+   =early-init.el=, and the starter snippets.
+6. Installs the basic tools (=jasspa-me=, =mg= source, =exiftool=) into
+   =~/.emacs.d/bin/=.
+
+The current =setup.sh= merges tools into =~/.emacs.d/bin= rather than
+backing up that directory.  If you already keep custom binaries there,
+copy them aside first.
+
+** Step 4 — start Emacs
+
+#+begin_src sh
+emacs
+#+end_src
+
+On the first launch Emacs installs/activates the packages from the local
+mirror and may byte-compile or native-compile them.  This can take a
+minute or two; later launches are fast.
+
+Check =*Messages*= for a line like:
+
+#+begin_example
+my/offline-packages=t  dir=/home/you/elpa-mirror-emacs-31.1-garuda-x86_64-20261111T081256-46pkgs
+#+end_example
+
+That confirms the rendered =init.el= found the mirror and is using it
+instead of the network archives.
+
+** Step 5 — optional starter snippets
+
+The starter files are installed but *not auto-loaded*:
+
+- =~/.emacs.d/init-starter.el= — per-version starter customisations.
+- =~/.emacs.d/init-starter-coding.el= — eglot/dape/corfu/coding setup.
+- =~/.emacs.d/init-on-windows.el= — Windows-specific starter (not used on
+  Linux).
+
+To opt in, append these lines to =~/.emacs.d/init.el=:
+
+#+begin_src emacs-lisp
+(load (expand-file-name "init-starter" user-emacs-directory) t t)
+(load (expand-file-name "init-starter-coding" user-emacs-directory) t t)
+#+end_src
+
+Remove or comment out the lines to disable them again.
+
+* Installing the language-server bundle
+
+The language bundle is independent of the Emacs toolkit.  Install the
+Emacs toolkit first, then install the language tools into the same
+=~/.emacs.d/bin= tree so the coding starter can find them.
+
+** Step 1 — extract and install
+
+#+begin_src sh
+cd /path/to/this/directory
+tar -xzf linux-tools-offline-20261111T082538.tar.gz
+cd linux-tools-offline-20261111T082538
+./install-offline.sh
+#+end_src
+
+The default install root is =~/.emacs.d/bin=.  To install elsewhere:
+
+#+begin_src sh
+./install-offline.sh /path/to/tools
+#+end_src
+
+** What gets installed
+
+| Path                                                     | Tool                                      |
+|----------------------------------------------------------+-------------------------------------------|
+| =~/.emacs.d/bin/jdtls/=                                  | Eclipse JDT Language Server               |
+| =~/.emacs.d/bin/jdtls/com.microsoft.java.debug.plugin-0.53.1.jar= | Java debug adapter for dape      |
+| =~/.emacs.d/bin/netcoredbg/=                             | .NET debugger                             |
+| =~/.emacs.d/bin/ada_language_server/bin/=                | Ada Language Server                       |
+| =~/.emacs.d/bin/buf/bin/buf=                             | buf CLI + protobuf LSP                    |
+| =~/.emacs.d/bin/kotlin-language-server/bin/=             | Kotlin Language Server                    |
+| =~/.emacs.d/bin/npm/=                                    | TypeScript + typescript-language-server   |
+| =~/.emacs.d/bin/exiftool/=                               | exiftool                                  |
+
+Each installed directory gets a =.installed= marker.  Re-running the
+installer skips tools that already have a marker.  Delete the marker to
+force a reinstall.
+
+** Step 2 — install the optional pieces
+
+=csharp-ls= is not bundled because there is no portable prebuilt Linux
+binary.  If the target has the .NET SDK:
+
+#+begin_src sh
+dotnet tool install --tool-path "$HOME/.emacs.d/bin/csharp-ls" csharp-ls
+#+end_src
+
+The TypeScript tarballs need Node/npm.  Install them user-locally:
+
+#+begin_src sh
+cd "$HOME/.emacs.d/bin/npm"
+npm install -g ./typescript-5.8.3.tgz ./typescript-language-server-4.3.4.tgz
+#+end_src
+
+If you prefer a non-root prefix:
+
+#+begin_src sh
+npm install --prefix "$HOME/.local" \
+  ./typescript-5.8.3.tgz ./typescript-language-server-4.3.4.tgz
+export PATH="$HOME/.local/bin:$PATH"
+#+end_src
+
+** Step 3 — verify the tools
+
+#+begin_src sh
+~/.emacs.d/bin/jdtls/bin/jdtls --help          # needs python3 + java
+~/.emacs.d/bin/netcoredbg/netcoredbg --version
+~/.emacs.d/bin/ada_language_server/bin/ada_language_server --version
+~/.emacs.d/bin/buf/bin/buf --version
+~/.emacs.d/bin/exiftool/exiftool -ver
+#+end_src
+
+The JDTLS launcher is a Python 3 script; it starts Java itself.  Kotlin
+Language Server also needs Java on =PATH=.
+
+** Step 4 — PATH
+
+The coding starter adds the relevant =~/.emacs.d/bin/= subdirectories to
+=exec-path= and =PATH= automatically when it loads.  If you do not use the
+coding starter, add them manually:
+
+#+begin_src sh
+export PATH="$HOME/.emacs.d/bin:$HOME/.emacs.d/bin/jdtls/bin:$HOME/.emacs.d/bin/netcoredbg:$HOME/.emacs.d/bin/ada_language_server/bin:$HOME/.emacs.d/bin/buf/bin:$HOME/.emacs.d/bin/kotlin-language-server/bin:$HOME/.emacs.d/bin/exiftool:$PATH"
+#+end_src
+
+If you installed TypeScript into a custom npm prefix, add that bin
+directory too.
+
+* Rebuilding Emacs 31.1 from the bundled source
+
+The Emacs pack contains =emacs-31.1.tar.xz= (55 MB).  Build it on the
+target only if the target does not already have Emacs 31.1.
+
+** Build dependencies
+
+The exact package names vary by distribution.  The =configure= step
+typically wants:
+
+- a C compiler and =make= (e.g. =build-essential= or =base-devel=)
+- =libgtk-3-dev= (GUI) or =libncurses-dev= (terminal)
+- =libgnutls28-dev=, =libxml2-dev=
+- =libjpeg-dev=, =libpng-dev=, =libtiff-dev=, =libgif-dev=
+- =libjansson-dev=, =libtree-sitter-dev=
+- =libsqlite3-dev= if you want built-in SQLite support
+- =texinfo= if you build the manuals
+
+These are /not/ in the toolkit; install them from the target's own offline
+repositories.
+
+** Build and install
+
+#+begin_src sh
+tar -xf emacs-31.1.tar.xz -C /tmp
+cd /tmp/emacs-31.1
+./configure --prefix="$HOME/.local"
+make -j"$(nproc)"
+make install
+export PATH="$HOME/.local/bin:$PATH"
+emacs --version
+#+end_src
+
+The installed binary is =~/.local/bin/emacs=.  Add that directory to
+=PATH= in your shell profile.
+
+* Rollback
+
+The Emacs pack includes =rollback.sh=.  Run it from the extracted toolkit
+directory:
+
+#+begin_src sh
+cd /path/to/emacs-offline-toolkit-31.1-garuda-x86_64-tools-20261111T081309
+./rollback.sh
+#+end_src
+
+It lists the available backup stamps and prompts for confirmation.  The
+current (post-install) state is archived under
+=~/.emacs.d/.backups/<NOW>-rolledback/= so you can roll forward again if
+needed.
+
+* Troubleshooting
+
+** =my/offline-packages=<none found>=
+
+The mirror was not extracted into =$HOME=.  Check:
+
+#+begin_src sh
+ls -d "$HOME"/elpa-mirror-emacs-*
+#+end_src
+
+If nothing is listed, re-run =./setup.sh= from the extracted toolkit.
+
+** A package is missing
+
+Look in =*Messages*= for a =my/ensure-package: skipping ...= line.  Common
+reasons:
+
+- the package requires a newer Emacs than the target;
+- the package was not in =packages/emacs-31.1.el= when the mirror was built.
+
+The mirror contents are listed in =PACKAGES.txt=.
+
+** =emacs: command not found=
+
+Either install Emacs 31.1 from the bundled source (see above) or add the
+existing binary to =PATH=.  If you built with =--prefix="$HOME/.local"=:
+
+#+begin_src sh
+export PATH="$HOME/.local/bin:$PATH"
+#+end_src
+
+** =setup.sh: Permission denied=
+
+#+begin_src sh
+bash setup.sh
+#+end_src
+
+** =rollback.sh= says “No backups found”=
+
+The rollback script only restores backups created by =setup.sh=.  If this
+was a first install into an empty =~/.emacs.d=, there was nothing to back
+up.
+
+** exiftool fails=
+
+Install =perl= from the target's offline repository, then test:
+
+#+begin_src sh
+~/.emacs.d/bin/exiftool/exiftool -ver
+#+end_src
+
+** JDTLS or Kotlin LS will not start=
+
+Both need Java.  JDTLS additionally needs Python 3 for its launcher.  Check:
+
+#+begin_src sh
+java -version
+python3 --version
+#+end_src
+
+** =mg= is only a source tarball=
+
+=~/.emacs.d/bin/mg/mg-4.0.tar.gz= is the upstream source, not a binary.
+Build it locally:
+
+#+begin_src sh
+cd ~/.emacs.d/bin/mg
+tar xzf mg-4.0.tar.gz
+cd mg-4.0
+./configure --prefix="$HOME/.local"
+make
+make install
+#+end_src
+
+* Verification performed
+
+The archives in this directory were checked on the build machine before
+being copied here:
+
+- The Emacs pack was extracted into a throwaway =$HOME=, =setup.sh= was
+  run, and Emacs 31.1 booted in batch mode against the packaged mirror.
+  The mirror was detected, 45 packages loaded, and =ef-trio-dark= loaded
+  successfully.
+- The language bundle was extracted and its installer was run into a
+  throwaway root.  =jdtls=, =netcoredbg=, =ada_language_server=, =buf= and
+  =exiftool= all started and reported their versions; the Java debug JAR
+  was present and valid; the archive checksums matched.
+- Loading =init-starter-coding.el= with those tools installed registered
+  JDTLS, Ada LS, buf, and Kotlin LS in =eglot-server-programs=.
+
+* Notes
+
+** GNU Emacs has no LTS track
+
+GNU Emacs does not publish “LTS” releases.  This pack targets *31.1*, the
+latest stable release at build time (2026-08-24).  The 30.2 and 29.4
+series are earlier stable series, not official long-term-support branches.
+
+** Build provenance
+
+| Item                | Value                                                        |
+|---------------------+--------------------------------------------------------------|
+| Built               | 2026-11-11T08:13:11+00:00                                    |
+| Build host          | Garuda Linux x86_64                                          |
+| Emacs version       | 31.1                                                         |
+| Mirror              | 46 packages                                                  |
+| Emacs source        | =emacs-31.1.tar.xz= (SHA-256 =1da5790d9580c81932b5bf700633114468da7b3412d69faa767daebf974f4586=) |
+| Toolkit SHA-256     | see =SHA256SUMS=                                             |
+| Language bundle     | 279 MB gzip                                                  |
+
+** Windows
+
+The Emacs toolkit includes =setup.bat=, =rollback.bat=, and
+=init-on-windows.el= for Windows, but the language-server bundle in this
+directory is Linux x86_64.  Windows tooling is a separate workflow; use
+the Windows equivalents described in the toolkit README.
