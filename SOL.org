@@ -1,0 +1,211 @@
+#+TITLE: Simulation Object Library (SOL) Data Workflow
+#+AUTHOR: James Dyer
+#+DATE: 2026-11-13
+#+OPTIONS: toc:2 num:nil
+#+STARTUP: overview
+
+* Purpose
+
+The SOL is the versioned catalogue of reusable platforms, sensors, weapons, munitions, organisations and behaviours.  The XML instance is generated from CSV tables and validated against the schema.  Edit the tables, not the XML.
+
+* Files
+
+| File                                      | Role                                               | Edit?          |
+|-------------------------------------------+----------------------------------------------------+----------------|
+| =libraries/sol-data/library.csv=          | Root attributes and =Metadata=                     | Yes            |
+| =libraries/sol-data/objects.csv=          | One row per object                                 | Yes            |
+| =libraries/sol-data/platform-details.csv= | Platform physical, performance and complement data | Yes            |
+| =tools/sol_table_to_xml.py=               | Generates and validates the XML                    | Extend only    |
+| =libraries/sol-minimal.xml=               | Generated SOL instance                             | No             |
+| =libraries/SOL.xsd=                       | SOL schema, currently tangled from =spec.org=      | Via =spec.org= |
+| =Derived products/C2SIM_SMX_LOX.xsd=      | Imported C2SIM schema                              | No             |
+
+* Quick start
+
+#+BEGIN_SRC sh
+python3 tools/sol_table_to_xml.py
+#+END_SRC
+
+This reads =libraries/sol-data/=, writes =libraries/sol-minimal.xml=, and runs =xmllint --noout --schema libraries/SOL.xsd=.  Options: =--input-dir=, =--output=, =--schema=, =--no-validate=.
+
+* CSV conventions
+
+- UTF-8, comma-separated, header row first.  Quoted values are supported.
+- Column names are exact lowercase snake_case.  Every row must have the same number of fields as the header.
+- Blank lines after the header are ignored; leading/trailing whitespace is stripped.
+- Empty optional cell means the XML element is omitted.
+- =objects.csv= row order determines =Object= order in the XML.
+- Measures use =value unit=, for example =149.9 m=, =26 kn=, =7000 nmi=.  The value and unit are split at the last space.
+- =crew= and =passengers= are plain non-negative integers.
+- IDs use =[a-z0-9]+([a-z0-9-]*[a-z0-9]+)?=, preferably lowercase kebab-case.
+- Versions are required non-empty strings, conventionally =0.1.0=.
+
+* =library.csv=
+
+Exactly one data row.
+
+| Column           | Req. | Example                                   | XML target                         |
+|------------------+------+-------------------------------------------+------------------------------------|
+| =authority=      | Yes  | =urn:mimesis:sandbox:sol:hybrid-navy-sol= | =SOL/@authority=                   |
+| =version=        | Yes  | =0.1.0=                                   | =SOL/@version=                     |
+| =library_id=     | Yes  | =hybrid-navy-sol=                         | =Metadata/LibraryId=               |
+| =status=         | Yes  | =provisional=                             | =Metadata/Status=                  |
+| =classification= | No   | =Unclassified=                            | =c2sim:SecurityClassificationCode= |
+
+=classification= must be =Confidential=, =Secret=, =TopSecret= or =Unclassified= when present.
+
+#+BEGIN_EXAMPLE
+authority,version,library_id,status,classification
+urn:mimesis:sandbox:sol:hybrid-navy-sol,0.1.0,hybrid-navy-sol,provisional,Unclassified
+#+END_EXAMPLE
+
+* =objects.csv=
+
+One row per object.
+
+| Column                   | Req.        | Example             | XML target                                        |
+|--------------------------+-------------+---------------------+---------------------------------------------------|
+| =id=                     | Yes         | =type-26-frigate=   | =Object/@id=                                      |
+| =kind=                   | Yes         | =platform=          | =Object/@kind=                                    |
+| =version=                | Yes         | =0.1.0=             | =Object/@version=                                 |
+| =name=                   | Yes         | =Type 26 Frigate=   | =Name=                                            |
+| =role=                   | No          | =surface-combatant= | =Role=                                            |
+| =entity_type_name=       | Conditional | =Type 26 Frigate=   | =c2sim:NamedEntityType/c2sim:EntityTypeName=      |
+| =entity_type_namespace=  | Conditional | =mimesis.org/sol=   | =c2sim:NamedEntityType/c2sim:EntityTypeNamespace= |
+| =organization_type_code= | No          | =NOS=               | =c2sim:OrganizationTypeCode=                      |
+| =country_code=           | No          | =GBR=               | =c2sim:CountryCode=                               |
+| =echelon_code=           | No          | =BDE=               | =c2sim:EchelonCode=                               |
+
+Allowed =kind= values: =platform=, =sensor=, =weapon=, =munition=, =organisation=, =behaviour=.
+
+#+BEGIN_EXAMPLE
+id,kind,version,name,role,entity_type_name,entity_type_namespace,organization_type_code,country_code,echelon_code
+type-26-frigate,platform,0.1.0,Type 26 Frigate,surface-combatant,Type 26 Frigate,mimesis.org/sol,,,
+usv,platform,0.1.0,Uncrewed Surface Vessel,sensor-platform,Uncrewed Surface Vessel,mimesis.org/sol,,,
+submarine,platform,0.1.0,Submarine,undersea-threat,Submarine,mimesis.org/sol,,,
+blue-force,organisation,0.1.0,Blue Force,,,,NOS,,
+red-force,organisation,0.1.0,Red Force,,,,NOS,,
+#+END_EXAMPLE
+
+Rules:
+
+- =id= must be unique; =name= and =version= are required.
+- =entity_type_name= and =entity_type_namespace= must both be present or both be empty.
+- =country_code= is ISO 3166-1 alpha-3.  =organization_type_code= and =echelon_code= use C2SIM enumerations.
+- =objects.csv= must contain at least one object.
+
+* =platform-details.csv=
+
+At most one row per platform, joined by =object_id=.
+
+| Column            | Group         | XML element      | Format               |
+|-------------------+---------------+------------------+----------------------|
+| =object_id=       | Join key      | =Platform=       | Identifier           |
+| =length=          | =Physical=    | =Length=         | =value unit=         |
+| =beam=            | =Physical=    | =Beam=           | =value unit=         |
+| =draught=         | =Physical=    | =Draught=        | =value unit=         |
+| =height=          | =Physical=    | =Height=         | =value unit=         |
+| =mass=            | =Physical=    | =Mass=           | =value unit=         |
+| =cruise_speed=    | =Performance= | =CruiseSpeed=    | =value unit=         |
+| =max_speed=       | =Performance= | =MaxSpeed=       | =value unit=         |
+| =range=           | =Performance= | =Range=          | =value unit=         |
+| =endurance=       | =Performance= | =Endurance=      | =value unit=         |
+| =max_depth=       | =Performance= | =MaxDepth=       | =value unit=         |
+| =service_ceiling= | =Performance= | =ServiceCeiling= | =value unit=         |
+| =climb_rate=      | =Performance= | =ClimbRate=      | =value unit=         |
+| =crew=            | =Complement=  | =Crew=           | Non-negative integer |
+| =passengers=      | =Complement=  | =Passengers=     | Non-negative integer |
+
+#+BEGIN_EXAMPLE
+object_id,length,beam,draught,height,mass,cruise_speed,max_speed,range,endurance,max_depth,service_ceiling,climb_rate,crew,passengers
+type-26-frigate,149.9 m,20.8 m,7.5 m,,6900 t,15 kn,26 kn,7000 nmi,60 d,,,,118,90
+usv,11 m,3.2 m,0.6 m,,7 t,,20 kn,500 nmi,5 d,,,,0,
+submarine,70 m,7.6 m,6.2 m,,2000 t,10 kn,20 kn,8000 nmi,50 d,300 m,,,35,
+#+END_EXAMPLE
+
+Rules:
+
+- Only one row per =object_id=; the ID must exist in =objects.csv=.
+- Only used for platform objects.  Rows for other kinds warn and are ignored.
+- A platform with no row, or with all detail cells empty, gets no =Platform= block.
+- Groups with no non-empty children are omitted.
+- Text values and units are validated by the XSD, not parsed as decimals or unit vocabularies.
+- A header-only table is valid if there are no platforms.
+
+* Generated XML
+
+#+BEGIN_EXAMPLE
+<SOL xmlns="https://mimesis.org/library/sol/0.1"
+     xmlns:c2sim="http://www.sisostds.org/schemas/C2SIM/1.1"
+     authority="..." version="...">
+  <Metadata>...</Metadata>
+  <Objects>
+    <Object id="..." kind="..." version="...">...</Object>
+  </Objects>
+</SOL>
+#+END_EXAMPLE
+
+Object children are emitted in this order, omitting empty optional elements:
+
+| Order | Element                      | Source                                       |
+|-------+------------------------------+----------------------------------------------|
+|     1 | =Name=                       | =name=                                       |
+|     2 | =Role=                       | =role=                                       |
+|     3 | =c2sim:NamedEntityType=      | =entity_type_name= + =entity_type_namespace= |
+|     4 | =c2sim:OrganizationTypeCode= | =organization_type_code=                     |
+|     5 | =c2sim:CountryCode=          | =country_code=                               |
+|     6 | =c2sim:EchelonCode=          | =echelon_code=                               |
+|     7 | =Platform=                   | =platform-details.csv=                       |
+
+=SISOEntityType=, =APP6CSymbol=, =UUID= and =Resource= are valid XSD slots but are not yet exposed by the generator.
+
+Inside =Platform=, the order is =Physical= (=Length=, =Beam=, =Draught=, =Height=, =Mass=), =Performance= (=CruiseSpeed=, =MaxSpeed=, =Range=, =Endurance=, =MaxDepth=, =ServiceCeiling=, =ClimbRate=), then =Complement= (=Crew=, =Passengers=).
+
+* Common changes
+
+| Task                   | Steps                                                                          |
+|------------------------+--------------------------------------------------------------------------------|
+| Update a value         | Edit the cell, run the generator, review the XML diff.                         |
+| Add a platform         | Add a row to =objects.csv= and a matching row to =platform-details.csv=.       |
+| Add an organisation    | Add a row to =objects.csv= with a =kind= of =organisation= and optional codes. |
+| Remove an object       | Remove its rows, then remove or replace scenario references.                   |
+| Rename an object ID    | Change =id= and =object_id=, then update scenario =TypeRef=/=AffiliationRef=.  |
+| Bump an object version | Change =version=, then update scenario references to the same version.         |
+| Change library version | Edit =library.csv=, then update scenario references.                           |
+
+Published object versions are immutable.  Change the content and publish a new version rather than silently changing an existing one.
+
+* Validation
+
+The generator checks required columns, row widths, unique IDs, ID patterns, kind values, required names/versions, the =NamedEntityType= pair, joins and measure format.  It then runs:
+
+#+BEGIN_SRC sh
+xmllint --noout --schema libraries/SOL.xsd libraries/sol-minimal.xml
+#+END_SRC
+
+The XSD validates element order, cardinality, types, enumerations and units.  If =xmllint= cannot load =C2SIM_SMX_LOX.xsd=, ensure the import path is =../Derived%20products/C2SIM_SMX_LOX.xsd= and the file exists.
+
+* Emacs workflow
+
+Open the CSV tables directly.  If =csv-mode= is installed, enable it for alignment:
+
+#+BEGIN_SRC elisp
+(add-to-list 'auto-mode-alist '("\\.csv\\'" . csv-mode))
+#+END_SRC
+
+Generate with =M-x compile= using =python3 tools/sol_table_to_xml.py=, then =M-x recompile= after edits.  Review the CSV and XML changes with =M-x vc-diff= or Magit.
+
+Optional one-key command:
+
+#+BEGIN_SRC elisp
+(defun my/sol-generate-xml ()
+  (interactive)
+  (let ((default-directory (project-root (project-current))))
+    (compile "python3 tools/sol_table_to_xml.py")))
+#+END_SRC
+
+* Extending
+
+- To expose =SISOEntityType=, =APP6CSymbol=, =UUID= or =Resource=, add the column/table and map it in =tools/sol_table_to_xml.py= at the correct sequence position.
+- For multiple =NamedEntityType= or repeated =Resource= elements, use a detail table keyed by =object_id=.
+- For sensor/weapon/munition/behaviour-specific data, add a detail table and a corresponding builder, following the =Platform= pattern.
