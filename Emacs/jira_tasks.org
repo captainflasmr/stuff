@@ -1,0 +1,301 @@
+#+TITLE: MIMESIS Sandbox Jira Subtasks
+#+AUTHOR: James Dyer
+#+TODO: TODO DOING REVIEW | DONE
+#+COLUMNS: %ITEM(Task) %TODO %SPRINT %EFFORT{:} %CLOCKSUM
+#+OPTIONS: num:nil \n:nil author:nil creator:nil date:nil H:4 toc:nil tasks:t title:nil prop:t html-style:nil html-postamble:nil html-preamble:nil
+#+STARTUP: showall logdone
+
+* Sprints
+
+#+BEGIN: simply-kanban-sprint-summary :scope file
+| Sprint | Tasks | Done | Progress | Estimate | Actual |  Remaining |
+|--------+-------+------+----------+----------+--------+------------|
+|      8 |     7 |    0 |       1% |      19d | 1h 3m  | 18d 6h 21m |
+|      9 |     3 |    0 |       0% |      20d | 0m     |        20d |
+|     10 |     4 |    0 |       0% |      21d | 0m     |        21d |
+|     11 |     6 |    0 |       0% |      21d | 0m     |        21d |
+#+END:
+
+* Work breakdown
+
+#+BEGIN: columnview :hlines 2 :id local :indent nil :link nil :skip-empty-rows nil
+| Task                                                                         | TODO   | SPRINT |   EFFORT | CLOCKSUM |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| Work breakdown                                                               |        |        | 81d 0:00 |     1:03 |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| MM-1472 Scenario Specification                                               |        |        |  7d 0:00 |     1:03 |
+| Confirm C2SIM artefact provenance and permitted use                          | REVIEW |      8 |       3d |     1:00 |
+| Agree MIMESIS namespace and profile version                                  | DOING  |      8 |       2d |     0:02 |
+| Validate a Hybrid Navy instance and obtain stakeholder acceptance            | DOING  |      8 |       2d |     0:01 |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| MM-1473 Simulation Object Library                                            |        |        | 37d 0:00 |          |
+| Define canonical Sensor object structure (AC3)                               | TODO   |      8 |       4d |          |
+| Define canonical Weapon and Munition object structures (AC4)                 | TODO   |      9 |      10d |          |
+| Define canonical Behaviour and Environment object structures                 | TODO   |      9 |       4d |          |
+| Define XML exchange and storage, and ID, version and reference strategy      | TODO   |      8 |       4d |          |
+| Review Warfare Signature Database input and produce a Hybrid Navy object set | TODO   |     10 |      15d |          |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| MM-1474 Environment Library                                                  |        |        | 12d 0:00 |          |
+| Complete reusable, versioned environment configurations                      | TODO   |      9 |       6d |          |
+| Finish the C2SIM environmental pin review                                    | TODO   |      8 |       2d |          |
+| Complete visibility and time-of-day support (AC4)                            | TODO   |     10 |       2d |          |
+| Close Environment Library structure review (AC1)                             | TODO   |     10 |       2d |          |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| MM-1475 Data Transformation Architecture                                     |        |        |  8d 0:00 |          |
+| Package validated XML and validation report for the integration team         | TODO   |     11 |       6d |          |
+| Demonstrate an example transformation (AC5)                                  | TODO   |     11 |       2d |          |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| MM-1476 Configuration Management                                             |        |        |  9d 0:00 |          |
+| Version and baseline all artefacts together                                  | TODO   |     11 |       3d |          |
+| Trace each result to its configuration and random seed                       | TODO   |     10 |       2d |          |
+| Identify the change control process (AC5)                                    | TODO   |     11 |       4d |          |
+|------------------------------------------------------------------------------+--------+--------+----------+----------|
+| Cross-cutting: backend alignment and review                                  |        |        |  8d 0:00 |          |
+| Review the open questions with the integration team                          | TODO   |      8 |       2d |          |
+| Decide and apply the profile gaps in spec.org                                | TODO   |     11 |       4d |          |
+| Hold a stakeholder review of the whole project                               | TODO   |     11 |       2d |          |
+#+END:
+
+#+BEGIN: clocktable :scope subtree :maxlevel 2
+#+CAPTION: Clock summary at [2026-11-17 Tue 14:40]
+| Headline                           | Time   |      |
+|------------------------------------+--------+------|
+| *Total time*                       | *1:03* |      |
+|------------------------------------+--------+------|
+| Work breakdown                     | 1:03   |      |
+| \_  MM-1472 Scenario Specification |        | 1:03 |
+#+END:
+
+** MM-1472 Scenario Specification
+
+*** REVIEW Confirm C2SIM artefact provenance and permitted use
+:PROPERTIES:
+:Effort:   3d
+:SPRINT:   8
+:END:
+:LOGBOOK:
+CLOCK: [2026-11-17 Tue 11:48]--[2026-11-17 Tue 11:48] =>  0:00
+CLOCK: [2026-11-17 Tue 10:27]--[2026-11-17 Tue 11:27] =>  1:00
+:END:
+
+Confirm the local =C2SIM_SMX_LOX= artefacts match =OpenC2SIM/C2SIMArtifacts= v1.0.1 (commit =93a21798e5e5ccb7ff4b498eb2d7b4dd0f9f3946=) and obtain approval. Record the archive checksum, licensing and classification constraints.
+
+*Done when:* the controlled package and checksum are recorded and approved.
+
+*** DOING Agree MIMESIS namespace and profile version
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   8
+:END:
+- Note taken on [2026-11-17 Tue 15:19] \\
+  input
+- Note taken on [2026-11-17 Tue 15:11] \\
+  jjjj
+- Note taken on [2026-11-17 Tue 15:03] \\
+  another poopy
+- Note taken on [2026-11-17 Tue 14:57] \\
+  poopy
+:LOGBOOK:
+CLOCK: [2026-11-17 Tue 14:25]--[2026-11-17 Tue 14:26] =>  0:01
+CLOCK: [2026-11-17 Tue 11:56]--[2026-11-17 Tue 11:56] =>  0:00
+CLOCK: [2026-11-17 Tue 11:26]--[2026-11-17 Tue 11:27] =>  0:01
+:END:
+
+Agree the real namespace root and profile version, then replace the temporary placeholder root in the profile, extension, SOL and Environment Library schemas and examples.
+
+*Done when:* all schemas and examples use the agreed namespace and still validate.
+
+*** DOING Validate a Hybrid Navy instance and obtain stakeholder acceptance
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   8
+:END:
+:LOGBOOK:
+CLOCK: [2026-11-17 Tue 14:36]--[2026-11-17 Tue 14:37] =>  0:01
+CLOCK: [2026-11-17 Tue 11:50]--[2026-11-17 Tue 11:50] =>  0:00
+:END:
+
+Run the full pipeline on the Hybrid Navy instance in the VM and present the result for acceptance.
+
+*Done when:* a validation report is attached and acceptance is recorded.
+
+** MM-1473 Simulation Object Library
+
+*** TODO Define canonical Sensor object structure (AC3)
+:PROPERTIES:
+:Effort:   4d
+:SPRINT:   8
+:END:
+
+Extend =SOL.xsd= with a sensor parameter block (for example type, range, field of view), populate an example and validate it.
+
+*Done when:* the sensor structure and a validating example are checked in.
+
+*** TODO Define canonical Weapon and Munition object structures (AC4)
+:PROPERTIES:
+:Effort:   10d
+:SPRINT:   9
+:END:
+
+Define weapon and munition structures, including the launcher-to-missile relationship, populate an example and validate it.
+
+*Done when:* the structures and a validating example are checked in.
+
+*** TODO Define canonical Behaviour and Environment object structures
+:PROPERTIES:
+:Effort:   4d
+:SPRINT:   9
+:END:
+
+Decide whether these belong in the SOL or in the extension and Environment Library, then define them.
+
+*Done when:* the decision is recorded and the structures are defined or formally deferred.
+
+*** TODO Define XML exchange and storage, and ID, version and reference strategy
+:PROPERTIES:
+:Effort:   4d
+:SPRINT:   8
+:END:
+
+Document how objects are stored, how IDs and versions are assigned, and how scenarios reference them (authority, objectId, version).
+
+*Done when:* the strategy is written in =spec.org= and the validator enforces
+it.
+
+*** TODO Review Warfare Signature Database input and produce a Hybrid Navy object set
+:PROPERTIES:
+:Effort:   15d
+:SPRINT:   10
+:END:
+
+Review possible WSD data as input and produce the object set the Hybrid Navy scenario needs.
+
+*Done when:* the object set is checked in and validates.
+
+** MM-1474 Environment Library
+
+*** TODO Complete reusable, versioned environment configurations
+:PROPERTIES:
+:Effort:   6d
+:SPRINT:   9
+:END:
+
+Add the remaining weather, sea state, visibility, time-of-day inputs and oceanographic configurations beyond the North Atlantic Moderate baseline (for example North Sea Winter).
+
+*Done when:* the agreed configurations are checked in, versioned and validate.
+
+*** TODO Finish the C2SIM environmental pin review
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   8
+:END:
+
+Complete the review. Current evidence is that C2SIM v1.0.1 has only the =EnvironmentalObject= and =METOCGraphic= shells.
+
+*Done when:* every field is marked pinned or MIMESIS-owned.
+
+*** TODO Complete visibility and time-of-day support (AC4)
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   10
+:END:
+
+Visibility has a required unit. Time of day is derived from =TimeOrigin= plus position. Implement or document how it is computed.
+
+*Done when:* the approach is documented and AC4 can be ticked.
+
+*** TODO Close Environment Library structure review (AC1)
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   10
+:END:
+
+Confirm the Environment Library structure is complete and validate it.
+
+*Done when:* AC1 is ticked with evidence.
+
+** MM-1475 Data Transformation Architecture
+
+*** TODO Package validated XML and validation report for the integration team
+:PROPERTIES:
+:Effort:   6d
+:SPRINT:   11
+:END:
+
+Agree the handoff package format (files, report, versions) and produce one from the sandbox-4 files and =validation-report-sandbox-4.json=.
+
+*Done when:* the integration team has received a package in the agreed format.
+
+*** TODO Demonstrate an example transformation (AC5)
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   11
+:END:
+
+Demonstrate the experiment 1 flow end to end: XSD, generated XML, validation, handoff. Confirm the integration team can ingest the output.
+
+*Done when:* a run is demonstrated and ingestion is confirmed.
+
+** MM-1476 Configuration Management
+
+*** TODO Version and baseline all artefacts together
+:PROPERTIES:
+:Effort:   3d
+:SPRINT:   11
+:END:
+
+Define one baseline covering profile, source artefacts, XSDs, examples, libraries, transformation code and adapter (AC3 and AC6).
+
+*Done when:* a tagged example baseline exists.
+
+*** TODO Trace each result to its configuration and random seed
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   10
+:END:
+
+Record the configuration set and seed in the run output, so each result can be traced.
+
+*Done when:* a run output identifies its full configuration and seed.
+
+*** TODO Identify the change control process (AC5)
+:PROPERTIES:
+:Effort:   4d
+:SPRINT:   11
+:END:
+
+Define how schema, SOL and library changes are proposed, reviewed and released.
+
+*Done when:* the process is documented.
+
+** Cross-cutting: backend alignment and review
+
+*** TODO Review the open questions with the integration team
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   8
+:END:
+
+Ask about the C2SIM version and envelope, =PlanPhaseReference=, =DISEntityType=, real DIS type names, the intended scenario date, and whether "A Plane" is a placeholder. See =backend-alignment.org=.
+
+*Done when:* answers are recorded in =backend-alignment.org=.
+
+*** TODO Decide and apply the profile gaps in spec.org
+:PROPERTIES:
+:Effort:   4d
+:SPRINT:   11
+:END:
+
+Decide on =Task/RouteRef=, a task action vocabulary (mapped to =TaskActionCode=), point features, UUIDs on =Route= and =Task=, and optional mission and environment baseline. Apply the agreed changes and update the validator. This could be split into one subtask per gap.
+
+*Done when:* each gap is applied or formally rejected, and the examples still validate.
+
+*** TODO Hold a stakeholder review of the whole project
+:PROPERTIES:
+:Effort:   2d
+:SPRINT:   11
+:END:
+
+Cover the profile, extensions, SOL, Environment Library, validation pipeline and backend alignment. This closes the review acceptance criteria on every story (AC7 on MM-1472, MM-1473, MM-1474, MM-1475 and MM-1476). Record decisions in =sandbox.org=.
+
+*Done when:* the review has taken place and the outcomes are recorded.
